@@ -16,10 +16,31 @@ export import :data;
 export import :decode;
 
 export namespace jpeg {
+class JpegFileError : public std::runtime_error {
+public:
+	using std::runtime_error::runtime_error;
+};
+
 class JpegFile {
 private:
 	std::fstream file;
 	uint16_t reset_interval = 0;
+
+	// Ensures a parameter is under param_limit, throwing an exception
+	// if not. The majority of JPEG parameters are unsigned and have a
+	// lower bound of 0, so it is sufficient to check only an upper bound
+	// in many cases.
+	template<std::integral T>
+	static void verify_param_under(const std::string& param_name, T param, uint16_t param_limit) {
+		if (param >= param_limit) {
+			throw JpegFileError(std::format(
+				"{0} parameter invalid, {0}={1}>={2}",
+				param_name,
+				param,
+				param_limit
+			));
+		}
+	}
 
 	uint8_t read_byte() {
 		return (uint8_t) file.get();
@@ -55,13 +76,9 @@ private:
 	}
 
 	uint16_t read_uint16() {
-		msg::fine("READ: 16-bit int");
-
 		// File is big-endian
 		uint16_t high = read_byte();
 		uint16_t low = read_byte();
-
-		msg::fine("READ: high {} low {}", high, low);
 
 		return (high << 8) | low;
 	}
@@ -71,7 +88,6 @@ private:
 	// of everything *after* the length field, and sets the cursor to
 	// the byte after it.
 	uint16_t read_segment_size() {
-		msg::fine("READ: read_segment_size");
 		return read_uint16() - 2;
 	}
 
@@ -83,7 +99,7 @@ private:
 
 	// Reads a segment consisting of only a length field followed by
 	// arbitrary binary data.
-	bool read_opaque_segment_to(std::vector<uint8_t>& dest) {
+	void read_opaque_segment_to(std::vector<uint8_t>& dest) {
 		uint16_t length = read_segment_size();
 		msg::debug("READ: reading opaque segment size {}", length);
 
@@ -92,64 +108,56 @@ private:
 			dest.push_back(read_byte());
 			length--;
 		}
-
-		return true;
 	}
 
-	bool read_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
+	void read_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
 		if (marker.is_appn()) {
-			return read_appn_to(j, marker.parse_appn());
+			read_appn_to(j, marker.parse_appn());
 		} else if (marker.is_sof()) {
-			return read_sof_to(j, marker.parse_sof());
+			read_sof_to(j, marker.parse_sof());
 		} else if (marker.is_rstn()) {
 			read_rstn_to(j, marker.parse_rstn());
 		} else if (marker.is_res() || marker.is_jpgn()) {
 			msg::warn("Skipping reserved marker {}", std::string(marker));
 		} else {
-			return read_special_marker_segment_to(j, marker);
+			read_special_marker_segment_to(j, marker);
 		}
-
-		return true;
 	}
 
-	bool read_reset_interval() {
+	void read_reset_interval() {
 		msg::debug("READ: process DRI");
 
 		uint16_t segment_length = read_segment_size();
 
 		if (segment_length != 2) {
-			msg::error("READ: DRI: Bad segment length {}", segment_length);
-			return false;
+			throw JpegFileError(std::format(
+				"DRI: Bad segment length {}", segment_length
+			));
 		}
 
 		// Save reset interval for later. It will be applied to any
 		// following parsed SOS segments.
 		reset_interval = read_uint16();
-		return true;
 	}
 
-	bool read_appn_to(CompressedJpegData& j, int n) {
+	void read_appn_to(CompressedJpegData& j, int n) {
 		msg::debug("READ: process APP{}", n);
 
 		AppSegment appseg;
 		appseg.n = n;
-		if (!read_opaque_segment_to(appseg.data)) return false;
+		read_opaque_segment_to(appseg.data);
 		j.app_segments().push_back(std::move(appseg));
-
-		return true;
 	}
 
-	bool read_comment_to(CompressedJpegData& j) {
+	void read_comment_to(CompressedJpegData& j) {
 		msg::debug("READ: process COM");
 
 		std::vector<uint8_t> dest;
-		if (!read_opaque_segment_to(dest)) return false;
+		read_opaque_segment_to(dest);
 		j.comments().push_back(std::move(dest));
-
-		return true;
 	}
 
-	bool read_sof_to(CompressedJpegData& j, const StartOfFrameInfo& i) {
+	void read_sof_to(CompressedJpegData& j, const StartOfFrameInfo& i) {
 		msg::debug("READ: process {}", std::string(i));
 
 		uint16_t segment_length = read_segment_size();
@@ -173,11 +181,8 @@ private:
 			params.horizontal_sampling_factor = h;
 			params.vertical_sampling_factor = v;
 
-			if (params.horizontal_sampling_factor - 1 > 3 ||
-			    params.vertical_sampling_factor - 1 > 4) {
-				msg::error("bad sampling factor(s) while reading frame header");
-				return false;
-			}
+			verify_param_under("(Hi-1)", h - 1, 4);
+			verify_param_under("(Vi-1)", v - 1, 4);
 
 			params.qtable_selector = read_byte();
 
@@ -186,19 +191,17 @@ private:
 		}
 
 		if (segment_length != 0) {
-			msg::error("unexpected final value for length while reading SOF, abort");
-			return false;
+			throw JpegFileError("unexpected final value for length while reading SOF, abort");
 		}
 
 		j.frames().push_back(std::move(frame));
-		return true;
 	}
 
 	void read_rstn_to(CompressedJpegData& j, int n) {
 		msg::debug("READ: process RST{}", n);
 	}
 
-	bool read_qtable_to(CompressedJpegData& j) {
+	void read_qtable_to(CompressedJpegData& j) {
 		msg::debug("READ: process DQT");
 
 		uint16_t length = read_segment_size();
@@ -206,15 +209,8 @@ private:
 		while (length > 0) {
 			auto [pq_precision, tq_destination] = read_2x_uint4();
 
-			if (tq_destination >= 4) {
-				msg::error("Tq parameter invalid, Tq={}>=4", tq_destination);
-				return false;
-			}
-
-			if (pq_precision >= 2) {
-				msg::error("Pq parameter invalid, Pq={}>=2", pq_precision);
-				return false;
-			}
+			verify_param_under("Tq", tq_destination, 4);
+			verify_param_under("Pq", pq_precision, 2);
 
 			QuantizationTable& qtable = j.q_tables()[tq_destination];
 			msg::debug("READ: install qtable to dest {}", tq_destination);
@@ -243,14 +239,11 @@ private:
 		}
 
 		if (length != 0) {
-			msg::error("unexpected final value for length while reading qtables, abort");
-			return false;
+			throw JpegFileError("unexpected final value for length while reading qtables, abort");
 		}
-
-		return true;
 	}
 
-	bool read_hufftable_to(CompressedJpegData& j) {
+	void read_hufftable_to(CompressedJpegData& j) {
 		msg::debug("READ: process DHT");
 
 		uint16_t segment_length = read_segment_size();
@@ -258,15 +251,8 @@ private:
 		while (segment_length > 0) {
 			auto [tc_table_class, th_destination] = read_2x_uint4();
 
-			if (th_destination >= 4) {
-				msg::error("Th parameter invalid, Th={}>=4", th_destination);
-				return false;
-			}
-
-			if (tc_table_class >= 2) {
-				msg::error("Tc parameter invalid, Tc={}>=2", tc_table_class);
-				return false;
-			}
+			verify_param_under("Th", th_destination, 4);
+			verify_param_under("Tc", tc_table_class, 2);
 
 			segment_length--;
 
@@ -315,23 +301,21 @@ private:
 		}
 
 		if (segment_length != 0) {
-			msg::error("unexpected final value for length while reading hufftables, abort");
-			return false;
+			throw JpegFileError(
+				"unexpected final value for length while reading hufftables, abort"
+			);
 		}
-
-		return true;
 	}
 
 	void read_arithtable_to(CompressedJpegData& j) {
 		msg::debug("READ: process DAC");
 	}
 
-	bool read_scan_to(CompressedJpegData& j) {
+	void read_scan_to(CompressedJpegData& j) {
 		msg::debug("READ: process SOS");
 
 		if (j.frames().size() == 0) {
-			msg::error("encountered SOS marker before SOF");
-			return false;
+			throw JpegFileError("encountered SOS marker before SOF");
 		}
 
 		uint16_t segment_length = read_segment_size();
@@ -341,10 +325,7 @@ private:
 		scan.num_components = read_byte();
 		segment_length--;
 
-		if (scan.num_components - 1 > 3) {
-			msg::error("invalid Ns field while reading SOS");
-			return false;
-		}
+		verify_param_under("(Ns-1)", scan.num_components - 1, 4);
 
 		for (int i = 0; i < scan.num_components; i++) {
 			ScanComponentParams params;
@@ -355,11 +336,8 @@ private:
 			params.dc_entropy_coding_selector = dc_sel;
 			params.ac_entropy_coding_selector = ac_sel;
 
-			if (params.dc_entropy_coding_selector > 3 ||
-			    params.ac_entropy_coding_selector > 3) {
-				msg::error("SOS: coding selector too large for component {}", i);
-				return false;
-			}
+			verify_param_under("DcSel", dc_sel, 4);
+			verify_param_under("AcSel", ac_sel, 4);
 
 			segment_length -= 2;
 
@@ -376,17 +354,15 @@ private:
 		segment_length -= 3;
 
 		if (segment_length != 0) {
-			msg::error("unexpected final value for length while reading SOS, abort");
-			return false;
+			throw JpegFileError("unexpected final value for length while reading SOS, abort");
 		}
 
-		if (!read_entropy_coded_data_to(scan)) return false;
+		read_entropy_coded_data_to(scan);
 
 		j.frames().back().scans.push_back(std::move(scan));
-		return true;
 	}
 
-	bool read_entropy_coded_data_to(Scan& s) {
+	void read_entropy_coded_data_to(Scan& s) {
 		msg::debug("READ: Consume ECS sequence");
 
 		uint8_t b = read_byte();
@@ -426,26 +402,30 @@ private:
 			// Otherwise, we are at end of ECS segments.
 			// Back up the marker we ate and bail.
 			file.unget().unget();
-			return true;
+			break;
 		}
-
 	}
 
-	bool read_special_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
+	void read_special_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
 		switch (marker.parse_special()) {
 		case MarkerSpecial::dqt_define_quant_table:
-			return read_qtable_to(j);
+			read_qtable_to(j);
+			break;
 		case MarkerSpecial::dht_define_huff_table:
-			return read_hufftable_to(j);
+			read_hufftable_to(j);
+			break;
 		case MarkerSpecial::dac_define_arith_coding:
 			read_arithtable_to(j);
 			break;
 		case MarkerSpecial::sos_start_of_scan:
-			return read_scan_to(j);
+			read_scan_to(j);
+			break;
 		case MarkerSpecial::com_comment:
-			return read_comment_to(j);
+			read_comment_to(j);
+			break;
 		case MarkerSpecial::dri_define_rst_interval:
-			return read_reset_interval();
+			read_reset_interval();
+			break;
 		case MarkerSpecial::dhp_define_hierarchical_progression:
 		case MarkerSpecial::exp_expand_reference_components:
 		case MarkerSpecial::dnl_define_num_lines:
@@ -459,19 +439,21 @@ private:
 			msg::debug("READ: Hit EOI. Stopping...");
 			break;
 		default:
-			msg::error("READ: special marker parsed to unknown value {}", int(marker));
-			return false;
+			throw JpegFileError(std::format(
+				"READ: special marker parsed to unknown value {}",
+				int(marker)
+			));
 		}
-
-		return true;
 	}
 
 public:
 	JpegFile(std::string path) {
-		msg::debug("READ: try open JpegFile \"{}\"...", path);
+		msg::debug("FILE: try open JpegFile \"{}\"...", path);
 
 		// In normal operation, we expect no errors, so if an error
-		// occurs throw an exception.
+		// occurs throw an exception. This includes EOF; reaching EOF
+		// means a malformed JPEG file - something almost never
+		// directly in the user's control.
 		file.exceptions(std::ios_base::badbit | std::ios_base::failbit | std::ios_base::eofbit);
 		file.open(path, std::ios_base::in | std::ios_base::out | std::ios_base::binary);
 	}
@@ -482,8 +464,7 @@ public:
 		bool success = true;
 
 		if (!read_expect_soi()) {
-			msg::error("File missing SOI marker");
-			return std::move(j);
+			throw JpegFileError("File missing SOI marker");
 		}
 
 		while (!mark.is_eoi()) {
@@ -495,8 +476,7 @@ public:
 			}
 
 			// In case of EOI, this does nothing.
-			success = read_marker_segment_to(j, mark);
-			if (!success) return std::move(j);
+			read_marker_segment_to(j, mark);
 		}
 
 		j.set_valid();

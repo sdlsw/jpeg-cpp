@@ -113,6 +113,12 @@ int main_inner(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
 	try {
 		main_inner(argc, argv);
+	} catch (const std::ios_base::failure& e) {
+		// FIXME Unfortunately on Windows this message is completely
+		// useless... may need to replace the ios_base::failure throws
+		// with something else.
+		std::cerr << "FATAL (IO): " << e.code().message() << std::endl;
+		return 1;
 	} catch (const std::exception& e) {
 		std::cerr << "FATAL: " << e.what() << std::endl;
 		return 1;
