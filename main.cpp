@@ -51,17 +51,6 @@ void matrixtest() {
 	printmat(detransformed);
 }
 
-void write_raw_component(const jpeg::RawComponent& comp, std::string filename) {
-	std::fstream file;
-	file.open(filename, std::ios_base::out | std::ios_base::binary);
-
-	for (size_t y = 0; y < comp.y_pixels(); y++) {
-		for (size_t x = 0; x < comp.x_pixels(); x++) {
-			file.put(comp[x, y]);
-		}
-	}
-}
-
 int main_inner(int argc, char* argv[]) {
 	if (argc < 2) {
 		std::cout << "Needs at least one argument." << std::endl;
@@ -101,7 +90,9 @@ int main_inner(int argc, char* argv[]) {
 
 		jpeg::JpegDecoder decoder;
 		std::vector<jpeg::RawComponent> decoded = decoder.decode(jpeg_data);
-		write_raw_component(decoded[0], "out.bin");
+
+		jpeg::BmpFile bmp { "out.bmp" };
+		bmp.write(decoded);
 	} else {
 		std::cout << "unrecognized mode" << std::endl;
 		return 1;
