@@ -644,7 +644,7 @@ struct Scan {
 	uint8_t succ_approx_high = 0;
 	uint8_t succ_approx_low = 0;
 
-	uint16_t reset_interval = 0;
+	uint16_t restart_interval = 0;
 
 	// Entropy-coded data as it is encoded in the file, with RST markers
 	// removed in favor of breaking up the intervals into sub-vectors.
@@ -669,7 +669,7 @@ struct Scan {
 			end_spectral_sel,
 			succ_approx_high,
 			succ_approx_low,
-			reset_interval
+			restart_interval
 		);
 
 		for (auto& comp : component_params) {

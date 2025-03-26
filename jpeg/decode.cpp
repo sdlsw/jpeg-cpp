@@ -39,48 +39,20 @@ private:
 		return _scan->entropy_coded_data[rst_idx];
 	}
 
-	bool next_rst() {
-		rst_idx++;
-		if (is_end_of_intervals()) {
-			msg::debug("DECODE: reached end of intervals");
-			return false;
-		}
-
-		msg::debug("DECODE: next RST");
-
-		byte_idx = 0;
-
-		// DC predictor is reset on each RST interval.
-		for (auto& pred : dc_preds) {
-			pred = 0;
-		}
-
-		return true;
-	}
-
-
 	// Read and populate the next byte. Returns true if there is now a
 	// byte available to read, and false if there is none.
 	bool next_byte() {
 		if (is_end_of_intervals()) return false;
 
 		if (byte_idx >= cur_interval().size()) {
-			if (!next_rst()) return false;
+			msg::error("DECODE: next_byte: cannot get any more bytes this interval");
+			return false;
 		}
 
 		// Handle byte stuffing.
 		uint8_t next_byte = cur_interval()[byte_idx];
 		if (cur_byte == 0xFF && next_byte == 0x00) {
 			byte_idx++;
-
-			// On stuffed byte case, we may run off the end of
-			// the current interval, so need to do the check
-			// again...
-			if (byte_idx >= cur_interval().size()) {
-				msg::warn("DECODE: ran off end of RST interval during stuffed byte handling");
-				if (!next_rst()) return false;
-			}
-
 			next_byte = cur_interval()[byte_idx];
 		}
 
@@ -91,6 +63,25 @@ private:
 		return true;
 	}
 public:
+	// This function must be called from outside.
+	bool next_rst() {
+		rst_idx++;
+		if (is_end_of_intervals()) {
+			msg::debug("DECODE: reached end of intervals");
+			return false;
+		}
+
+		byte_idx = 0;
+		if(!next_byte()) return false;
+
+		// DC predictor is reset on each RST interval.
+		for (auto& pred : dc_preds) {
+			pred = 0;
+		}
+
+		return true;
+	}
+
 	static int16_t extend(int16_t v, int16_t t) {
 		int16_t v_t = 0x1 << (t - 1);
 
@@ -180,7 +171,10 @@ public:
 
 	int16_t decode_dc_coeff(const HuffmanTable& table) {
 		int16_t ssss = decode_symbol(table);
-		if (ssss < 0) throw std::runtime_error("decode_dc_coeff: failed to decode ssss symbol");
+
+		if (ssss < 0) {
+			throw std::runtime_error("decode_dc_coeff: failed to decode ssss symbol");
+		}
 
 		// Don't need to do anything in this case, so just end early
 		if (ssss == 0) {
@@ -255,10 +249,15 @@ private:
 
 		cnt = 0;
 		for (const auto& scan : frame.scans) {
-			msg::debug("DECODE: scan {}", cnt);
+			msg::debug(
+				"DECODE: scan {}: RSTi={}",
+				cnt, scan.restart_interval
+			);
 			decode_scan(data, scan, components);
 			cnt++;
 		}
+
+		msg::debug("DECODE: decode_frame: done");
 
 		return std::move(components);
 	}
@@ -271,19 +270,24 @@ private:
 		std::vector<BlockView> block_views;
 		auto scan_view = ScanDecodeView(scan);
 
-		msg::debug("DECODE: init blockviews");
+		msg::debug("DECODE: decode_scan: init blockviews");
 
 		// Initialize blockviews and DC predictors
 		for (auto& comp : components) {
 			block_views.push_back(BlockView(comp));
 		}
 
-		msg::debug("DECODE: start scan");
+		msg::debug("DECODE: decode_scan: begin decode");
+
 		// Decode MCUs until done.
 		int mcucnt = 0;
 		while (decode_mcu(data, scan_view, block_views)) {
 			mcucnt++;
-			//if (mcucnt >= 2) throw std::exception("stop");
+
+			if (scan.restart_interval > 0 && mcucnt >= scan.restart_interval) {
+				scan_view.next_rst();
+				mcucnt = 0;
+			}
 		}
 	}
 

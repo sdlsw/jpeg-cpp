@@ -24,7 +24,7 @@ public:
 class JpegFile {
 private:
 	std::fstream file;
-	uint16_t reset_interval = 0;
+	uint16_t restart_interval = 0;
 
 	// Ensures a parameter is under param_limit, throwing an exception
 	// if not. The majority of JPEG parameters are unsigned and have a
@@ -124,7 +124,7 @@ private:
 		}
 	}
 
-	void read_reset_interval() {
+	void read_restart_interval() {
 		msg::debug("READ: process DRI");
 
 		uint16_t segment_length = read_segment_size();
@@ -135,9 +135,9 @@ private:
 			));
 		}
 
-		// Save reset interval for later. It will be applied to any
+		// Save restart interval for later. It will be applied to any
 		// following parsed SOS segments.
-		reset_interval = read_uint16();
+		restart_interval = read_uint16();
 	}
 
 	void read_appn_to(CompressedJpegData& j, int n) {
@@ -321,7 +321,7 @@ private:
 		uint16_t segment_length = read_segment_size();
 
 		Scan scan;
-		scan.reset_interval = reset_interval;
+		scan.restart_interval = restart_interval; // Defined earlier by DRI
 		scan.num_components = read_byte();
 		segment_length--;
 
@@ -386,7 +386,7 @@ private:
 				continue;
 			}
 
-			msg::debug("READ: EC: Hit mark {}", std::string(mark));
+			msg::fine("READ: EC: Hit mark {}", std::string(mark));
 
 			// If it's a valid marker, we're at the end of an
 			// ECS, so add it to parsed segments.
@@ -424,7 +424,7 @@ private:
 			read_comment_to(j);
 			break;
 		case MarkerSpecial::dri_define_rst_interval:
-			read_reset_interval();
+			read_restart_interval();
 			break;
 		case MarkerSpecial::dhp_define_hierarchical_progression:
 		case MarkerSpecial::exp_expand_reference_components:
