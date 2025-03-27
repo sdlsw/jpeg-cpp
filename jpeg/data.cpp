@@ -549,7 +549,12 @@ struct HuffmanTable {
 	// as specified in section C.
 	std::vector<HuffmanCode> codes;
 
+	// Tables for increased lookup speed.
+	std::array<uint16_t, 16> size_ptrs {0};
+	std::array<uint16_t, 16> size_amts {0};
+
 	// Generate the table HUFFCODE, as specified in figure C.2
+	// Requires HUFFSIZE to be populated.
 	void populate_codes() {
 		if (codes.empty()) {
 			msg::warn("HuffmanTable: Attempt to populate_codes() on empty table");
@@ -565,11 +570,15 @@ struct HuffmanTable {
 			entry.code = code;
 			code++;
 
+			size_amts[cur_size-1]++;
+
 			if (k == codes.size() - 1) continue; // guard against out of range error
 
 			// lookahead and handle potential increase in code size
 			int next_size = codes[k+1].bits;
 			if (next_size == cur_size) continue;
+
+			size_ptrs[next_size-1] = k+1;
 
 			// next_size will be larger than cur_size, since codes
 			// are organized in order of code size.
@@ -578,16 +587,26 @@ struct HuffmanTable {
 		}
 	}
 
-	int16_t lookup_code(uint16_t lookup_code, unsigned int bits) const {
+	int16_t lookup_code(uint16_t lookup_code, uint8_t bits) const {
 		if (!set) {
 			throw std::runtime_error("Cannot lookup code in unset table");
 		}
 
-		// TODO do this more efficiently? will have to see where the
-		// time goes...
-
-		for (auto& code : codes) {
-			if (bits != code.bits) continue;
+		// Optimization: `codes` is sorted by code length, smallest
+		// first. We take advantage of this by iterating only
+		// over the codes that are N bits long, eliminating the
+		// need to check the size manually.
+		//
+		// In addition, if there are no codes of size N, then start=0
+		// and end=0; this skips the loop altogether.
+		//
+		// In practice this results in a significant speedup, often up 
+		// to 2x overall execution speed for decoding compared to the
+		// previous implementation.
+		uint16_t start = size_ptrs[bits-1];
+		uint16_t end = start + size_amts[bits-1];
+		for (int k = start; k < end; k++) {
+			const auto& code = codes[k];
 			if (lookup_code == code.code) return code.value;
 		}
 
