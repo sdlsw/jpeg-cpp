@@ -82,6 +82,15 @@ struct StartOfFrameInfo {
 		return type == StartOfFrameType::baseline_seq;
 	}
 
+	uint8_t marker_value() const {
+		return (
+			0xC0 |
+			((uint8_t) type) |
+			(((uint8_t) coding) << 3) |
+			(((uint8_t) is_differential) << 2)
+		);
+	}
+
 	explicit operator std::string() const {
 		return std::format(
 			"SOF {} | {}DIFFERENTIAL | {}-CODED",
@@ -153,6 +162,10 @@ struct Marker {
 		return StartOfFrameInfo(marker);
 	}
 
+	static Marker sof(const StartOfFrameInfo& info) {
+		return Marker(info.marker_value());
+	}
+
 	bool is_rstn() const {
 		// RSTn Markers are 0b11010xxx
 		return (marker & 0xF8) == 0xD0;
@@ -163,6 +176,10 @@ struct Marker {
 		return marker & 0x07;
 	}
 
+	static Marker rstn(uint8_t n) {
+		return Marker(0xD0 | (0x07 & n));
+	}
+
 	bool is_appn() const {
 		// APPn Markers are 0b1110xxxx
 		return (marker & 0xF0) == 0xE0;
@@ -171,6 +188,10 @@ struct Marker {
 	// Get the 'n' of APPn.
 	unsigned char parse_appn() const {
 		return marker & 0x0F;
+	}
+
+	static Marker appn(uint8_t n) {
+		return Marker(0xE0 | (0x0F & n));
 	}
 
 	// Markers reserved specifically for JPG extensions.
@@ -503,6 +524,14 @@ struct QuantizationTable {
 	bool set = false;
 	Matrix<uint16_t, 8, 8> data;
 
+	uint8_t precision() const {
+		if (data.max() <= 255) {
+			return 0;
+		} else {
+			return 1;
+		}
+	}
+
 	explicit operator std::string() const {
 		if (!set) return "not set";
 		return std::string(data);
@@ -551,7 +580,7 @@ struct HuffmanTable {
 
 	// Tables for increased lookup speed.
 	std::array<uint16_t, 16> size_ptrs {0};
-	std::array<uint16_t, 16> size_amts {0};
+	std::array<uint8_t, 16> size_amts {0};
 
 	// Generate the table HUFFCODE, as specified in figure C.2
 	// Requires HUFFSIZE to be populated.
@@ -659,7 +688,7 @@ struct Scan {
 	std::vector<ScanComponentParams> component_params;
 
 	uint8_t start_spectral_sel = 0;
-	uint8_t end_spectral_sel = 0;
+	uint8_t end_spectral_sel = 63;
 	uint8_t succ_approx_high = 0;
 	uint8_t succ_approx_low = 0;
 
@@ -733,7 +762,7 @@ struct FrameComponentParams {
 struct Frame {
 	StartOfFrameInfo sof_info;
 
-	uint8_t sample_precision = 0;
+	uint8_t sample_precision = 8;
 	uint16_t num_lines = 0;
 	uint16_t samples_per_line = 0;
 	uint8_t num_components = 0;
