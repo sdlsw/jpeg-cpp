@@ -3,6 +3,7 @@ export module jpeg:encode;
 import std;
 import msg;
 
+import :codingbase;
 import :data;
 import :tables;
 
@@ -14,13 +15,11 @@ using std::int16_t;
 export namespace jpeg {
 // Helper class that keeps track of all indices needed to entropy-code
 // jpeg data.
-class ScanEncodeView {
+class ScanEncodeView : public DcPredictor {
 private:
 	Scan* _scan;
 	uint8_t n_bits = 0;
 	uint8_t cur_byte = 0xFF; // bytes are padded with 1 bits
-	size_t cur_dc_pred = 0;
-	std::vector<int16_t> dc_preds;
 
 	void put_byte() {
 		auto& interval = _scan->entropy_coded_data.back();
@@ -66,11 +65,7 @@ private:
 		return magnitude;
 	}
 public:
-	ScanEncodeView(Scan& scan) : _scan(&scan) {
-		for (int i = 0; i < _scan->num_components; i++) {
-			dc_preds.push_back(0);
-		}
-
+	ScanEncodeView(Scan& scan) : DcPredictor(scan.num_components), _scan(&scan) {
 		next_rst();
 	}
 
@@ -78,18 +73,13 @@ public:
 
 	void next_rst() {
 		_scan->entropy_coded_data.emplace(_scan->entropy_coded_data.end());
-		for (auto& pred : dc_preds) {
-			pred = 0;
-		}
-	}
-
-	void select_component(size_t c) {
-		cur_dc_pred = c;
+		dc_reset();
 	}
 
 	void encode_dc_coeff(const HuffmanTable& table, int16_t coeff) {
-		int16_t diff = coeff - dc_preds[cur_dc_pred];
-		dc_preds[cur_dc_pred] = coeff;
+		int16_t& pred = dc_pred();
+		int16_t diff = coeff - pred;
+		pred = coeff;
 
 		uint8_t ssss = magnitude_category(diff);
 		const HuffmanCode& code = table.lookup_value(ssss);
@@ -123,7 +113,7 @@ public:
 
 class JpegEncoder {
 private:
-	static void init_luma_params(Frame& frame, Scan& scan) {
+	static void add_luma_params(Frame& frame, Scan& scan) {
 		FrameComponentParams frame_params;
 		frame_params.identifier = 0;
 		frame_params.horizontal_sampling_factor = 2;
@@ -139,7 +129,7 @@ private:
 		scan.component_params.push_back(scan_params);
 	}
 
-	static void init_chroma_params(Frame& frame, Scan& scan, uint8_t id) {
+	static void add_chroma_params(Frame& frame, Scan& scan, uint8_t id) {
 		FrameComponentParams frame_params;
 		frame_params.identifier = id;
 		frame_params.horizontal_sampling_factor = 1;
@@ -294,9 +284,9 @@ public:
 		scan.num_components = raws.size();
 		scan.restart_interval = 0;
 
-		init_luma_params(frame, scan);
-		init_chroma_params(frame, scan, 1);
-		init_chroma_params(frame, scan, 2);
+		add_luma_params(frame, scan);
+		add_chroma_params(frame, scan, 1);
+		add_chroma_params(frame, scan, 2);
 
 		// FIXME there's no const constructor for BlockView,
 		// so even though we never modify the raws here we can't

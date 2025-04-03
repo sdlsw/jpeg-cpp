@@ -3,6 +3,7 @@ export module jpeg:decode;
 import std;
 import msg;
 
+import :codingbase;
 import :data;
 
 using std::uint8_t;
@@ -13,7 +14,7 @@ using std::int16_t;
 export namespace jpeg {
 // Helper class that keeps track of all the indices needed to traverse
 // entropy-coded data segments for decoding.
-class ScanDecodeView {
+class ScanDecodeView : public DcPredictor {
 private:
 	const Scan* _scan;
 	unsigned int rst_idx = 0;  // Current interval in scan.
@@ -21,11 +22,6 @@ private:
 	uint8_t bit_idx = 0;       // Current bit in current byte.
 
 	uint8_t cur_byte = 0; // Current byte.
-
-	// DC predictors stored in decode view, since that's what decides
-	// when to reset them.
-	size_t cur_dc_pred = 0;
-	std::vector<int16_t> dc_preds;
 
 	bool is_end_of_intervals() const {
 		return rst_idx >= _scan->entropy_coded_data.size();
@@ -75,9 +71,7 @@ public:
 		if(!next_byte()) return false;
 
 		// DC predictor is reset on each RST interval.
-		for (auto& pred : dc_preds) {
-			pred = 0;
-		}
+		dc_reset();
 
 		return true;
 	}
@@ -94,19 +88,9 @@ public:
 		}
 	}
 
-	ScanDecodeView(const Scan& scan) : _scan(&scan) {
-		for (int i = 0; i < scan.num_components; i++) {
-			dc_preds.push_back(0);
-		}
-
+	ScanDecodeView(const Scan& scan) : DcPredictor(scan.num_components), _scan(&scan) {
 		// Prime current byte
 		next_byte();
-	}
-
-	// Decoder doesn't know what component it's writing to, so
-	// need to select it from outside.
-	void select_component(size_t c) {
-		cur_dc_pred = c;
 	}
 
 	const Scan& scan() const { return *_scan; }
@@ -170,6 +154,7 @@ public:
 	}
 
 	int16_t decode_dc_coeff(const HuffmanTable& table) {
+		int16_t& pred = dc_pred();
 		int16_t ssss = decode_symbol(table);
 
 		if (ssss < 0) {
@@ -178,7 +163,7 @@ public:
 
 		// Don't need to do anything in this case, so just end early
 		if (ssss == 0) {
-			return dc_preds[cur_dc_pred];
+			return pred;
 		}
 
 		int16_t v = next_n_bits(ssss);
@@ -186,8 +171,8 @@ public:
 
 		int16_t diff = extend(v, ssss);
 
-		int16_t coeff = dc_preds[cur_dc_pred] + diff;
-		dc_preds[cur_dc_pred] = coeff;
+		int16_t coeff = pred + diff;
+		pred = coeff;
 
 		return coeff;
 	}

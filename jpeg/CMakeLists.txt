@@ -10,4 +10,5 @@ target_sources(
         decode.cpp
         encode.cpp
         file.cpp
+        codingbase.cpp
 )
