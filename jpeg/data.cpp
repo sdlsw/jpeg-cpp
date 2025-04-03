@@ -524,6 +524,9 @@ struct QuantizationTable {
 	bool set = false;
 	Matrix<uint16_t, 8, 8> data;
 
+	QuantizationTable() = default;
+	QuantizationTable(const std::initializer_list<uint16_t>& ilist) : data{ilist}, set{true} {}
+
 	uint8_t precision() const {
 		if (data.max() <= 255) {
 			return 0;
@@ -582,6 +585,16 @@ struct HuffmanTable {
 	std::array<uint16_t, 16> size_ptrs {0};
 	std::array<uint8_t, 16> size_amts {0};
 
+	// Value lookup table. A little big, but faster.
+	std::array<HuffmanCode*, 255> value_ptrs;
+
+	HuffmanTable() = default;
+	HuffmanTable(const std::initializer_list<HuffmanCode> ilist) {
+		codes.insert(codes.end(), ilist.begin(), ilist.end());
+		populate_codes();
+		set = true;
+	}
+
 	// Generate the table HUFFCODE, as specified in figure C.2
 	// Requires HUFFSIZE to be populated.
 	void populate_codes() {
@@ -595,6 +608,8 @@ struct HuffmanTable {
 
 		for (int k = 0; k < codes.size(); k++) {
 			HuffmanCode& entry = codes[k];
+
+			value_ptrs[entry.value] = &entry;
 
 			entry.code = code;
 			code++;
@@ -614,6 +629,14 @@ struct HuffmanTable {
 			code = code << (next_size - cur_size);
 			cur_size = next_size;
 		}
+	}
+
+	const HuffmanCode& lookup_value(uint8_t value) const {
+		if (!set) {
+			throw std::runtime_error("Cannot lookup value in unset table");
+		}
+
+		return *value_ptrs[value];
 	}
 
 	int16_t lookup_code(uint16_t lookup_code, uint8_t bits) const {
@@ -659,6 +682,27 @@ struct HuffmanTable {
 		} else {
 			return std::format("{} VALUES OMITTED", codes.size());
 		}
+	}
+
+	// A bit hacky... but most Jpeg files I've seen in the wild all use
+	// the tables suggested by the JPEG standard. To save some time, this
+	// function will spit out the codes formatted as an initializer list
+	// that can be used in C++ code.
+	// TODO Implement custom tables?
+	std::string as_init_list() const {
+		std::stringstream out;
+
+		out << "{\n";
+
+		for (const auto& code : codes) {
+			// Note: Codes are set to zero because our
+			// algorithm can just regenerate them anyway.
+			out << std::format("\t{{ 0, {}, 0x{:X} }},\n", code.bits, code.value);
+		}
+
+		out << "}";
+
+		return out.str();
 	}
 };
 

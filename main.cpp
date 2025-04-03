@@ -247,8 +247,17 @@ int main_inner(int argc, char* argv[]) {
 		jpeg::BmpFile bmp { outfile, std::ios_base::out };
 		bmp.write(decoded);
 	} else if (mode == "encode") {
-		msg::error("encode mode not implemented yet :(");
-		return 1;
+		auto [infile, outfile] = io_file_args(args, "encode", default_jpeg);
+		if (infile == empty_path) return 1;
+
+		jpeg::BmpFile bmp_file { infile, std::ios_base::in };
+		jpeg::JpegEncoder encoder;
+
+		auto raws = bmp_file.read();
+		auto encoded = encoder.encode(raws);
+
+		jpeg::JpegFile jpeg { outfile, std::ios_base::out };
+		jpeg.write(encoded);
 	} else if (mode == "filetest-bmp") {
 		auto [infile, outfile] = io_file_args(args, "filetest-bmp", default_filetest_bmp);
 		if (infile == empty_path) return 1;
