@@ -197,7 +197,53 @@ public:
 	}
 };
 
-class JpegDecoder {
+class DecodePolicy {
+public:
+	static inline const std::string phase_name = "DECODE";
+
+	static void code_block(
+		const QuantizationTable& q_tbl,
+		const HuffmanTable& dc_tbl,
+		const HuffmanTable& ac_tbl,
+		ScanDecodeView& scan_view,
+		BlockView& block_view
+	) {
+		Matrix<int16_t, 8, 8> tmp_block;
+
+		// Read block into temp space
+		tmp_block[0, 0] = scan_view.decode_dc_coeff(dc_tbl);
+
+		int zz = 1;
+		while (zz <= 63) {
+			AcCoeff ac = scan_view.decode_ac_coeff(ac_tbl);
+			if (ac.is_eob()) {
+				break;
+			}
+
+			// Skip R zero coefficients
+			zz += ac.r;
+			if (zz >= 64) break;
+
+			auto& valref = tmp_block.zz(zz);
+			valref = ac.value;
+			zz++;
+		}
+
+		// Undo quantization, then IDCT
+		auto detransform = dct_mat * (tmp_block.ptwise_mul(q_tbl.data)) * dct_mat_t;
+		for (size_t y = 0; y < 8; y++) {
+			for (size_t x = 0; x < 8; x++) {
+				double level = detransform[x, y] + 128;
+				if (level < 0) level = 0;
+				if (level > 255) level = 255;
+
+				block_view[x, y] = (uint8_t) level;
+			}
+		}
+	}
+};
+
+class JpegDecoder : CodingBase<ScanDecodeView, DecodePolicy> {
 private:
 	std::vector<RawComponent> decode_frame(const CompressedJpegData& data, const Frame& frame) {
 		std::vector<RawComponent> components;
@@ -236,7 +282,7 @@ private:
 				"DECODE: scan {}: RSTi={}",
 				cnt, scan.restart_interval
 			);
-			decode_scan(data, scan, components);
+			code_scan(data, scan, components);
 			cnt++;
 		}
 
@@ -245,139 +291,6 @@ private:
 		return std::move(components);
 	}
 
-	void decode_scan(
-		const CompressedJpegData& data,
-		const Scan& scan,
-		std::vector<RawComponent>& components
-	) {
-		std::vector<BlockView> block_views;
-		auto scan_view = ScanDecodeView(scan);
-
-		msg::debug("DECODE: decode_scan: init blockviews");
-
-		// Initialize blockviews and DC predictors
-		for (auto& comp : components) {
-			block_views.push_back(BlockView(comp));
-		}
-
-		msg::debug("DECODE: decode_scan: begin decode");
-
-		// Decode MCUs until done.
-		int mcucnt = 0;
-		while (decode_mcu(data, scan_view, block_views)) {
-			mcucnt++;
-
-			if (scan.restart_interval > 0 && mcucnt >= scan.restart_interval) {
-				scan_view.next_rst();
-				mcucnt = 0;
-			}
-		}
-	}
-
-	bool decode_mcu(
-		const CompressedJpegData& data,
-		ScanDecodeView& scan_view,
-		std::vector<BlockView>& block_views
-	) {
-		//msg::debug("DECODE: start MCU");
-
-		int cnt = 0;
-		for (auto& block : block_views) {
-			const ScanComponentParams& params = scan_view.scan().component_params[cnt];
-			int acsel = params.ac_entropy_coding_selector;
-			int dcsel = params.dc_entropy_coding_selector;
-			int qsel = data.frames()[0].component_params[cnt].qtable_selector;
-
-			scan_view.select_component(cnt);
-
-			int blockcnt = 0;
-			do {
-				bool could_decode = false;
-				try {
-					could_decode = decode_block(
-						data.q_tables()[qsel],
-						data.huff_tables(TableClass::dc)[dcsel],
-						data.huff_tables(TableClass::ac)[acsel],
-						scan_view,
-						block,
-						cnt
-					);
-					//throw std::runtime_error("stop");
-				} catch (const std::exception& ex) {
-					msg::error("DECODE: failed to decode block: {}", ex.what());
-					msg::error(
-						"DECODE: ...at block_view{}: {}",
-						cnt, std::string(block)
-					);
-
-					throw ex;
-				}
-
-				if (!could_decode) {
-					throw std::runtime_error("could not decode mcu");
-				}
-
-				blockcnt++;
-			} while (block.block_advance());
-
-			//msg::debug("DECODE: blockcnt={}", blockcnt);
-
-			bool could_advance = block.mcu_advance();
-			if (!could_advance) {
-				msg::debug("DECODE: decode_mcu: reached end of destination data");
-				return false;
-			}
-
-			cnt++;
-		}
-
-		//throw std::runtime_error("stop");
-		return true;
-	}
-
-	bool decode_block(
-		const QuantizationTable& q_tbl,
-		const HuffmanTable& dc_tbl,
-		const HuffmanTable& ac_tbl,
-		ScanDecodeView& scan_view,
-		BlockView& block_view,
-		int cnt
-	) {
-		Matrix<int16_t, 8, 8> tmp_block;
-
-		// Read block into temp space
-		tmp_block[0, 0] = scan_view.decode_dc_coeff(dc_tbl);
-
-		int zz = 1;
-		while (zz <= 63) {
-			AcCoeff ac = scan_view.decode_ac_coeff(ac_tbl);
-			if (ac.is_eob()) {
-				break;
-			}
-
-			// Skip R zero coefficients
-			zz += ac.r;
-			if (zz >= 64) break;
-
-			auto& valref = tmp_block.zz(zz);
-			valref = ac.value;
-			zz++;
-		}
-
-		// Undo quantization, then IDCT
-		auto detransform = dct_mat * (tmp_block.ptwise_mul(q_tbl.data)) * dct_mat_t;
-		for (size_t y = 0; y < 8; y++) {
-			for (size_t x = 0; x < 8; x++) {
-				double level = detransform[x, y] + 128;
-				if (level < 0) level = 0;
-				if (level > 255) level = 255;
-
-				block_view[x, y] = (uint8_t) level;
-			}
-		}
-
-		return true;
-	}
 public:
 	std::vector<RawComponent> decode(const CompressedJpegData& data) {
 		msg::info("Decoding compressed data");

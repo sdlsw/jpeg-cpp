@@ -1205,7 +1205,7 @@ bool BlockView::coord_advance(
 	const int& x_bound,
 	const int& y_bound
 ) {
-	if (y >= y_bound || (y == y_bound - 1 && x >= x_bound)) {
+	if (y >= y_bound || (y == y_bound - 1 && x >= x_bound - 1)) {
 		return false;
 	}
 
@@ -1221,9 +1221,6 @@ bool BlockView::coord_advance(
 	recalc_x_offset();
 	recalc_y_offset();
 
-	if (y >= y_bound || (y == y_bound - 1 && x >= x_bound)) {
-		return false;
-	}
 	return true;
 }
 

@@ -111,112 +111,16 @@ public:
 	}
 };
 
-class JpegEncoder {
-private:
-	static void add_luma_params(Frame& frame, Scan& scan) {
-		FrameComponentParams frame_params;
-		frame_params.identifier = 0;
-		frame_params.horizontal_sampling_factor = 2;
-		frame_params.vertical_sampling_factor = 2;
-		frame_params.qtable_selector = 0;
+class EncodePolicy {
+public:
+	static inline const std::string phase_name = "ENCODE";
 
-		ScanComponentParams scan_params;
-		scan_params.component_selector = 0;
-		scan_params.dc_entropy_coding_selector = 0;
-		scan_params.ac_entropy_coding_selector = 0;
-
-		frame.component_params.push_back(frame_params);
-		scan.component_params.push_back(scan_params);
-	}
-
-	static void add_chroma_params(Frame& frame, Scan& scan, uint8_t id) {
-		FrameComponentParams frame_params;
-		frame_params.identifier = id;
-		frame_params.horizontal_sampling_factor = 1;
-		frame_params.vertical_sampling_factor = 1;
-		frame_params.qtable_selector = 1;
-
-		ScanComponentParams scan_params;
-		scan_params.component_selector = id;
-		scan_params.dc_entropy_coding_selector = 1;
-		scan_params.ac_entropy_coding_selector = 1;
-
-		frame.component_params.push_back(frame_params);
-		scan.component_params.push_back(scan_params);
-	}
-
-	static void encode_scan(
-		const CompressedJpegData& j,
-		Scan& scan,
-		std::vector<RawComponent>& raws
-	) {
-		std::vector<BlockView> block_views;
-		auto scan_view = ScanEncodeView(scan);
-
-		msg::debug("ENCODE: encode_scan: init blockviews");
-
-		for (RawComponent& raw : raws) {
-			block_views.push_back(BlockView(raw));
-		}
-
-		msg::debug("ENCODE: encode_scan: begin encode");
-
-		int mcucnt = 0;
-		while(encode_mcu(j, scan_view, block_views)) {
-			mcucnt++;
-
-			if (scan.restart_interval > 0 && mcucnt >= scan.restart_interval) {
-				scan_view.next_rst();
-				mcucnt = 0;
-			}
-		}
-	}
-
-	static bool encode_mcu(
-		const CompressedJpegData& data,
-		ScanEncodeView& scan_view,
-		std::vector<BlockView>& block_views
-	) {
-		int cnt = 0;
-		for (auto& block : block_views) {
-			const ScanComponentParams& params = scan_view.scan().component_params[cnt];
-			int acsel = params.ac_entropy_coding_selector;
-			int dcsel = params.dc_entropy_coding_selector;
-			int qsel = data.frames()[0].component_params[cnt].qtable_selector;
-
-			scan_view.select_component(cnt);
-
-			int blockcnt = 0;
-			do {
-				encode_block(
-					data.q_tables()[qsel],
-					data.huff_tables(TableClass::dc)[dcsel],
-					data.huff_tables(TableClass::ac)[acsel],
-					scan_view,
-					block,
-					cnt
-				);
-				//throw std::runtime_error("stop");
-				blockcnt++;
-			} while (block.block_advance());
-
-			bool could_advance = block.mcu_advance();
-			if (!could_advance) {
-				msg::debug("ENCODE: encode_mcu: reached end of source data");
-				return false;
-			}
-
-			cnt++;
-		}
-	}
-
-	static void encode_block(
+	static void code_block(
 		const QuantizationTable& q_tbl,
 		const HuffmanTable& dc_tbl,
 		const HuffmanTable& ac_tbl,
 		ScanEncodeView& scan_view,
-		BlockView& block_view,
-		int cnt
+		BlockView& block_view
 	) {
 		Matrix<double, 8, 8> tmp_block;
 
@@ -258,6 +162,42 @@ private:
 			scan_view.encode_ac_eob(ac_tbl);
 		}
 	}
+};
+
+class JpegEncoder : CodingBase<ScanEncodeView, EncodePolicy> {
+private:
+	static void add_luma_params(Frame& frame, Scan& scan) {
+		FrameComponentParams frame_params;
+		frame_params.identifier = 0;
+		frame_params.horizontal_sampling_factor = 2;
+		frame_params.vertical_sampling_factor = 2;
+		frame_params.qtable_selector = 0;
+
+		ScanComponentParams scan_params;
+		scan_params.component_selector = 0;
+		scan_params.dc_entropy_coding_selector = 0;
+		scan_params.ac_entropy_coding_selector = 0;
+
+		frame.component_params.push_back(frame_params);
+		scan.component_params.push_back(scan_params);
+	}
+
+	static void add_chroma_params(Frame& frame, Scan& scan, uint8_t id) {
+		FrameComponentParams frame_params;
+		frame_params.identifier = id;
+		frame_params.horizontal_sampling_factor = 1;
+		frame_params.vertical_sampling_factor = 1;
+		frame_params.qtable_selector = 1;
+
+		ScanComponentParams scan_params;
+		scan_params.component_selector = id;
+		scan_params.dc_entropy_coding_selector = 1;
+		scan_params.ac_entropy_coding_selector = 1;
+
+		frame.component_params.push_back(frame_params);
+		scan.component_params.push_back(scan_params);
+	}
+
 public:
 	CompressedJpegData encode(std::vector<RawComponent>& raws) const {
 		CompressedJpegData j;
@@ -291,7 +231,7 @@ public:
 		// FIXME there's no const constructor for BlockView,
 		// so even though we never modify the raws here we can't
 		// make it const
-		encode_scan(j, scan, raws);
+		code_scan(j, scan, raws);
 
 		j.set_valid();
 		return std::move(j);
