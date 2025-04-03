@@ -581,7 +581,7 @@ struct HuffmanTable {
 	// as specified in section C.
 	std::vector<HuffmanCode> codes;
 
-	// Tables for increased lookup speed.
+	// Tables for increased code lookup speed.
 	std::array<uint16_t, 16> size_ptrs {0};
 	std::array<uint8_t, 16> size_amts {0};
 
@@ -674,7 +674,7 @@ struct HuffmanTable {
 			std::stringstream out;
 			out << std::format("VALUES...\n");
 
-			for (auto& code : codes) {
+			for (const auto& code : codes) {
 				out << std::string(code) << '\n';
 			}
 
@@ -745,7 +745,7 @@ struct Scan {
 	size_t total_bytes_data() const {
 		size_t sum = 0;
 
-		for (auto& segment : entropy_coded_data) {
+		for (const auto& segment : entropy_coded_data) {
 			sum += segment.size();
 		}
 
@@ -764,7 +764,7 @@ struct Scan {
 			restart_interval
 		);
 
-		for (auto& comp : component_params) {
+		for (const auto& comp : component_params) {
 			out << std::format(
 				"COMPONENT {}\n",
 				std::string(comp)
@@ -817,7 +817,7 @@ struct Frame {
 	int h_max() const {
 		int max = 0;
 
-		for (auto& params : component_params) {
+		for (const auto& params : component_params) {
 			if (params.horizontal_sampling_factor > max) {
 				max = params.horizontal_sampling_factor;
 			}
@@ -829,7 +829,7 @@ struct Frame {
 	int v_max() const {
 		int max = 0;
 
-		for (auto& params : component_params) {
+		for (const auto& params : component_params) {
 			if (params.vertical_sampling_factor > max) {
 				max = params.vertical_sampling_factor;
 			}
@@ -841,7 +841,7 @@ struct Frame {
 	int mcu_length() const {
 		int out = 0;
 
-		for (auto& params : component_params) {
+		for (const auto& params : component_params) {
 			out += params.vertical_sampling_factor *
 				params.horizontal_sampling_factor;
 		}
@@ -859,7 +859,7 @@ struct Frame {
 			num_lines
 		);
 
-		for (auto& comp : component_params) {
+		for (const auto& comp : component_params) {
 			out << std::format(
 				"COMPONENT {}\n",
 				std::string(comp)
@@ -867,7 +867,7 @@ struct Frame {
 		}
 
 		int count = 0;
-		for (auto& scan : scans) {
+		for (const auto& scan : scans) {
 			out << std::format(
 				"SCAN{}:\n{}\n",
 				count,
@@ -933,11 +933,11 @@ public:
 	explicit operator std::string() const {
 		std::stringstream out;
 
-		for (auto& seg : _app_segments) {
+		for (const auto& seg : _app_segments) {
 			out << std::string(seg) << '\n';
 		}
 
-		for (auto& com : _comments) {
+		for (const auto& com : _comments) {
 			out << "COM " << string_from_byte_vec(com) << '\n';
 		}
 
@@ -954,7 +954,7 @@ public:
 			out << "NO FRAMES\n";
 		} else {
 			int count = 0;
-			for (auto& f : _frames) {
+			for (const auto& f : _frames) {
 				out << std::format(
 					"FRAME{}:\n{}\n",
 					count,
@@ -1205,11 +1205,7 @@ bool BlockView::coord_advance(
 	const int& x_bound,
 	const int& y_bound
 ) {
-	//msg::debug("DECODE: coord_advance x={} y={}", x, y);
-	//msg::debug("DECODE: x_bound={} y_bound={}", x_bound, y_bound);
-
 	if (y >= y_bound || (y == y_bound - 1 && x >= x_bound)) {
-		msg::debug("bound");
 		return false;
 	}
 
@@ -1224,8 +1220,6 @@ bool BlockView::coord_advance(
 
 	recalc_x_offset();
 	recalc_y_offset();
-
-	//msg::debug("DECODE: coord_advance AFTER x={} y={}", x, y);
 
 	if (y >= y_bound || (y == y_bound - 1 && x >= x_bound)) {
 		return false;
