@@ -214,8 +214,6 @@ public:
 
 class JpegDecoder {
 private:
-	bool ready;
-
 	std::vector<RawComponent> decode_frame(const CompressedJpegData& data, const Frame& frame) {
 		std::vector<RawComponent> components;
 
@@ -353,7 +351,7 @@ private:
 	}
 
 	bool decode_block(
-		const QuantizationTable q_tbl,
+		const QuantizationTable& q_tbl,
 		const HuffmanTable& dc_tbl,
 		const HuffmanTable& ac_tbl,
 		ScanDecodeView& scan_view,
@@ -396,19 +394,7 @@ private:
 		return true;
 	}
 public:
-	JpegDecoder() { reset(); }
-
-	void reset() {
-		ready = true;
-	}
-
 	std::vector<RawComponent> decode(const CompressedJpegData& data) {
-		if (!ready) {
-			throw std::runtime_error("JpegDecoder must be reset() before it can be used again");
-		}
-
-		ready = false;
-
 		msg::info("Decoding compressed data");
 
 		if (data.frames().size() == 0) {
