@@ -115,6 +115,22 @@ class EncodePolicy {
 public:
 	static inline const std::string phase_name = "ENCODE";
 
+	static void code_run(
+		const HuffmanTable& ac_tbl,
+		ScanEncodeView& scan_view,
+		uint8_t run_length,
+		int16_t coeff
+	) {
+		// If we're not at the end of a block, then runs must be
+		// encoded in chunks of 16.
+		while (run_length >= 16) {
+			scan_view.encode_ac_coeff(ac_tbl, 15, 0);
+			run_length -= 16;
+		}
+
+		scan_view.encode_ac_coeff(ac_tbl, run_length, coeff);
+	}
+
 	static void code_block(
 		const QuantizationTable& q_tbl,
 		const HuffmanTable& dc_tbl,
@@ -144,8 +160,8 @@ public:
 		while (zz <= 63) {
 			auto& valref = quantized.zz(zz);
 
-			if (valref != 0 | run_length >= 15) {
-				scan_view.encode_ac_coeff(ac_tbl, run_length, valref);
+			if (valref != 0) {
+				code_run(ac_tbl, scan_view, run_length, valref);
 				run_length = 0;
 			} else {
 				run_length++;
@@ -155,9 +171,6 @@ public:
 		}
 
 		// Explicitly code any remaining zeros as EOB
-		// FIXME Recognize run lengths longer than 16, and encode only
-		// one EOB if we reach the end of the block with a very long
-		// run length.
 		if (run_length > 0) {
 			scan_view.encode_ac_eob(ac_tbl);
 		}
