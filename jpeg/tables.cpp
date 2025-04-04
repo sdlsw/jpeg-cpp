@@ -408,7 +408,7 @@ double quality_factor(unsigned int quality) {
 	return std::pow(5.0, 1.0 - quality/50.0);
 }
 
-QuantizationTable generate_qtable(QuantizationTable base, unsigned int quality) {
+QuantizationTable generate_qtable(const QuantizationTable& base, unsigned int quality) {
 	double qfactor = quality_factor(quality);
 	msg::debug("TABLE: generate_qtable: quality={}, qfactor={}", quality, qfactor);
 
