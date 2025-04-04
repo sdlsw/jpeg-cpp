@@ -397,15 +397,15 @@ const QuantizationTable qtable_base_chroma {
 // Calculate a multiplier for the base quantization tables
 // based on a quality scale from 0-100.
 //
-// quality_factor(0) = 5
+// quality_factor(0) = 8 
 // quality_factor(50) = 1
-// quality_factor(100) = 0.2
+// quality_factor(100) = 0.125
 double quality_factor(unsigned int quality) {
 	if (quality > 100) {
 		throw std::invalid_argument("quality_factor: quality must be between 0 and 100");
 	}
 
-	return std::pow(5.0, 1.0 - quality/50.0);
+	return std::pow(8.0, 1.0 - quality/50.0);
 }
 
 QuantizationTable generate_qtable(const QuantizationTable& base, unsigned int quality) {
