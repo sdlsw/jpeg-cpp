@@ -1,5 +1,7 @@
 export module jpeg:tables;
 
+import msg;
+
 import :data;
 
 export namespace jpeg {
@@ -391,4 +393,25 @@ const QuantizationTable qtable_base_chroma {
 	99, 99, 99, 99, 99, 99, 99, 99,
 	99, 99, 99, 99, 99, 99, 99, 99
 };
+
+// Calculate a multiplier for the base quantization tables
+// based on a quality scale from 0-100.
+//
+// quality_factor(0) = 5
+// quality_factor(50) = 1
+// quality_factor(100) = 0.2
+double quality_factor(unsigned int quality) {
+	if (quality > 100) {
+		throw std::invalid_argument("quality_factor: quality must be between 0 and 100");
+	}
+
+	return std::pow(5.0, 1.0 - quality/50.0);
+}
+
+QuantizationTable generate_qtable(QuantizationTable base, unsigned int quality) {
+	double qfactor = quality_factor(quality);
+	msg::debug("TABLE: generate_qtable: quality={}, qfactor={}", quality, qfactor);
+
+	return QuantizationTable(base.data.scalar_mul(qfactor));
+}
 }

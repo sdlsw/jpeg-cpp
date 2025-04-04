@@ -157,12 +157,15 @@ public:
 
 void usage() {
 	std::cout << (
-		"usage: main.exe [-h|--help] MODE [INPUT_FILE] [-o OUTPUT_FILE]\n"
+		"usage: main.exe [-h|--help] MODE [INPUT_FILE] [-o OUTPUT_FILE] [options...]\n"
 		"options:\n"
 		"	-h|--help      Ignores every other option and prints this message.\n"
 		"	-o OUT         Specify output file. Accepted by the following modes:\n"
 		"	               encode, decode, filetest-bmp, filetest-jpeg. If not \n"
 		"	               specified, a default name will be chosen for you.\n"
+		"	-q QUALITY     A number from 0 to 100 specifying the quality of the image.\n"
+		"	               Accepted only by encode mode. If not specified, defaults\n"
+		"	               to 80.\n"
 		"\nmain modes:\n"
 		"	scan           Reads a JPEG file and dumps all of its metadata to stdout.\n"
 		"	encode         Compress an input BMP file.\n"
@@ -201,7 +204,8 @@ int main_inner(int argc, char* argv[]) {
 	ArgParser parser {{
 		{"--help", ArgParser::noconsume},
 		{"-h", ArgParser::noconsume},
-		{"-o", ArgParser::consume}
+		{"-o", ArgParser::consume},
+		{"-q", ArgParser::consume}
 	}};
 
 	auto args = parser.parse(argc, argv);
@@ -250,8 +254,13 @@ int main_inner(int argc, char* argv[]) {
 		auto [infile, outfile] = io_file_args(args, "encode", default_jpeg);
 		if (infile == empty_path) return 1;
 
+		int quality = 80;
+		if (args.options.contains("-q")) {
+			quality = std::stoi(args.options["-q"]);
+		}
+
 		jpeg::BmpFile bmp_file { infile, std::ios_base::in };
-		jpeg::JpegEncoder encoder;
+		jpeg::JpegEncoder encoder { (unsigned int) quality };
 
 		auto raws = bmp_file.read();
 		auto encoded = encoder.encode(raws);

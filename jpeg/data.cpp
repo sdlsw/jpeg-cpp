@@ -438,6 +438,17 @@ public:
 		return std::move(result);
 	}
 
+	template<arithmetic RESULT_T=T, arithmetic OTHER_T>
+	Matrix<RESULT_T, W, H> scalar_mul(OTHER_T m) const {
+		Matrix<RESULT_T, W, H> result;
+
+		for (size_t i = 0; i < data.size(); i++) {
+			result.data[i] = this->data[i] * m;
+		}
+
+		return std::move(result);
+	}
+
 	T max() const {
 		T m = 0;
 		for (size_t i = 0; i < data.size(); i++) {
@@ -526,6 +537,8 @@ struct QuantizationTable {
 
 	QuantizationTable() = default;
 	QuantizationTable(const std::initializer_list<uint16_t>& ilist) : data{ilist}, set{true} {}
+	QuantizationTable(const Matrix<uint16_t, 8, 8>& mat) : data{mat}, set{true} {}
+	QuantizationTable(Matrix<uint16_t, 8, 8>&& mat) : data{std::move(mat)}, set{true} {}
 
 	uint8_t precision() const {
 		if (data.max() <= 255) {

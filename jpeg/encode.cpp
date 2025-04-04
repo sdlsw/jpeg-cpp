@@ -54,7 +54,7 @@ private:
 		if (v == 0) return 0;
 
 		v = std::abs(v);
-		uint8_t mask = 0xFF;
+		uint16_t mask = 0xFFFF;
 		uint8_t magnitude = 0;
 
 		while((mask & v) != 0) {
@@ -166,6 +166,8 @@ public:
 
 class JpegEncoder : CodingBase<ScanEncodeView, EncodePolicy> {
 private:
+	unsigned int quality = 50;
+
 	static void add_luma_params(Frame& frame, Scan& scan) {
 		FrameComponentParams frame_params;
 		frame_params.identifier = 0;
@@ -200,11 +202,17 @@ private:
 
 public:
 	CompressedJpegData encode(std::vector<RawComponent>& raws) const {
+		msg::debug("ENCODE: Encoding image with quality level {}", quality);
+
 		CompressedJpegData j;
 
 		// Init tables.
-		j.q_tables()[0] = qtable_base_luma;
-		j.q_tables()[1] = qtable_base_chroma;
+		j.q_tables()[0] = generate_qtable(qtable_base_luma, quality);
+		msg::debug("ENCODE: luma qtable\n{}", std::string(j.q_tables()[0]));
+
+		j.q_tables()[1] = generate_qtable(qtable_base_chroma, quality);
+		msg::debug("ENCODE: chroma qtable\n{}", std::string(j.q_tables()[1]));
+
 		j.huff_tables(TableClass::dc)[0] = hufftable_dc0;
 		j.huff_tables(TableClass::ac)[0] = hufftable_ac0;
 		j.huff_tables(TableClass::dc)[1] = hufftable_dc1;
@@ -228,13 +236,13 @@ public:
 		add_chroma_params(frame, scan, 1);
 		add_chroma_params(frame, scan, 2);
 
-		// FIXME there's no const constructor for BlockView,
-		// so even though we never modify the raws here we can't
-		// make it const
 		code_scan(j, scan, raws);
 
 		j.set_valid();
 		return std::move(j);
 	}
+
+	JpegEncoder() = default;
+	JpegEncoder(unsigned int q) : quality{q} {}
 };
 }
