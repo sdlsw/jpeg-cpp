@@ -438,6 +438,19 @@ public:
 		return std::move(result);
 	}
 
+	Matrix<T, W, H> clamp(T low, T high) const {
+		Matrix<T, W, H> result;
+
+		for (size_t i = 0; i < data.size(); i++) {
+			T v = this->data[i];
+			if (v < low) v = low;
+			if (v > high) v = high;
+			result.data[i] = v;
+		}
+
+		return std::move(result);
+	}
+
 	template<arithmetic RESULT_T=T, arithmetic OTHER_T>
 	Matrix<RESULT_T, W, H> scalar_mul(OTHER_T m) const {
 		Matrix<RESULT_T, W, H> result;

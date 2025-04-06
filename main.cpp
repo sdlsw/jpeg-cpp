@@ -173,6 +173,8 @@ void usage() {
 		"\ntest modes:\n"
 		"	filetest-bmp   Read a BMP file and immediately write it back.\n"
 		"	filetest-jpeg  Read a JPEG file and immediately write it back.\n"
+		"	qualitytest    Read a BMP file and encode it using multiple quality settings,\n"
+		"	               from 0 to 100 in steps of 10.\n"
 		"	markertest     Prints every possible marker string to stdout.\n"
 	) << std::endl;
 }
@@ -285,6 +287,20 @@ int main_inner(int argc, char* argv[]) {
 
 		jpeg::JpegFile out_jpeg { outfile, std::ios_base::out };
 		out_jpeg.write(jpeg_data);
+	} else if (mode == "qualitytest") {
+		auto infile = in_file_arg(args, "qualitytest");
+		if (infile == empty_path) return 1;
+
+		jpeg::BmpFile in_bmp { infile, std::ios_base::in };
+		auto raws = in_bmp.read();
+
+		for (unsigned int q = 0; q <= 100; q += 10) {
+			auto fname = std::format("qualitytest{:03d}.jpg", q);
+			jpeg::JpegEncoder encoder { q } ;
+			jpeg::JpegFile jpeg { fname, std::ios_base::out };
+
+			jpeg.write(encoder.encode(raws));
+		}
 	} else {
 		msg::error("unrecognized mode {}", mode);
 		return 1;
