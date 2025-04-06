@@ -20,6 +20,7 @@ private:
 	Scan* _scan;
 	uint8_t n_bits = 0;
 	uint8_t cur_byte = 0xFF; // bytes are padded with 1 bits
+	bool flushed = false;
 
 	void put_byte() {
 		auto& interval = _scan->entropy_coded_data.back();
@@ -109,6 +110,14 @@ public:
 	void encode_ac_eob(const HuffmanTable& table) {
 		encode_ac_coeff(table, 0, 0);
 	}
+
+	// Must be called at end of encode process to ensure all bits are
+	// written.
+	void flush() {
+		if (flushed) throw std::runtime_error("ScanEncodeView: cannot use flush() twice");
+		if (n_bits > 0) put_byte();
+		flushed = true;
+	}
 };
 
 class EncodePolicy {
@@ -175,9 +184,13 @@ public:
 			scan_view.encode_ac_eob(ac_tbl);
 		}
 	}
+
+	static void flush(ScanEncodeView& scan_view) {
+		scan_view.flush();
+	}
 };
 
-class JpegEncoder : CodingBase<ScanEncodeView, EncodePolicy> {
+class JpegEncoder : CodingBase<EncodePolicy, ScanEncodeView> {
 private:
 	unsigned int quality = 50;
 

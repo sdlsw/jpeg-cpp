@@ -6,6 +6,19 @@ import msg;
 import :data;
 
 namespace jpeg {
+template<typename T, typename ScanView>
+concept is_coding_policy = requires(
+	const QuantizationTable& q_tbl,
+	const HuffmanTable& dc_tbl,
+	const HuffmanTable& ac_tbl,
+	ScanView& scan_view,
+	BlockView& block_view
+) {
+	T::code_block(q_tbl, dc_tbl, ac_tbl, scan_view, block_view);
+	{ T::phase_name } -> std::convertible_to<std::string>;
+	T::flush(scan_view);
+};
+
 // Base class for a container of DC predictors.
 class DcPredictor {
 private:
@@ -78,7 +91,8 @@ public:
 
 // Base class for en/decoders. Much of the logic regarding iterating through
 // the blocks is the same between the two.
-template<typename ScanView, typename CodingPolicy>
+template<typename CodingPolicy, typename ScanView>
+requires is_coding_policy<CodingPolicy, ScanView>
 class CodingBase {
 protected:
 	// en/decode a scan. ScanType is templated to allow for
@@ -115,6 +129,8 @@ protected:
 				);
 			}
 		} while (could_advance);
+
+		CodingPolicy::flush(scan_view);
 	}
 
 	static void code_mcu(

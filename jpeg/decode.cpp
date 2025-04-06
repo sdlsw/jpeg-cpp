@@ -241,9 +241,12 @@ public:
 			}
 		}
 	}
+
+	// Flush only required on encode
+	static void flush(ScanDecodeView& scan_view) {}
 };
 
-class JpegDecoder : CodingBase<ScanDecodeView, DecodePolicy> {
+class JpegDecoder : CodingBase<DecodePolicy, ScanDecodeView> {
 private:
 	std::vector<RawComponent> decode_frame(const CompressedJpegData& data, const Frame& frame) {
 		std::vector<RawComponent> components;
