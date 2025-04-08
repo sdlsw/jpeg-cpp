@@ -832,8 +832,8 @@ uint8_t calc_bmp_padding_bytes(uint32_t width) {
 }
 
 uint8_t clamped_convert(double x) {
-	if (x < 0) x = 0;
-	if (x > 255) x = 255;
+	if (x < 0.0) return 0;
+	if (x > 255.0) return 255;
 
 	return (uint8_t)x;
 }
@@ -916,8 +916,8 @@ private:
 			double b = file->get();
 
 			double luma = 0.299*r + 0.587*g + 0.114*b;
-			double cb = -0.1687*r - 0.3313*g + 0.5*b + 128.0;
-			double cr = 0.5*r - 0.4187*g - 0.0813*b + 128.0;
+			double cb = (-0.299*r - 0.587*g + 0.886*b) / 1.772 + 128;
+			double cr = ( 0.701*r - 0.587*g - 0.114*b) / 1.402 + 128;
 
 			rows[x0 + x] = YCbCrPixel(
 				clamped_convert(luma),
