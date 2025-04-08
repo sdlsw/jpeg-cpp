@@ -65,6 +65,31 @@ struct Args {
 	bool has_opt(const std::string& opt) const {
 		return options.contains(opt);
 	}
+
+	unsigned int getopt_uint(
+		const std::string& opt,
+		unsigned int default_value = 0,
+		unsigned int range_low = 0,
+		unsigned int range_high = -1
+	) const {
+		if (!has_opt(opt)) return default_value;
+
+		auto value = (unsigned int) stoi(options.at(opt));
+
+		if (value < range_low) {
+			throw std::runtime_error(std::format(
+				"{}: cannot be less than {}",
+				opt, range_low
+			));
+		} else if (value > range_high) {
+			throw std::runtime_error(std::format(
+				"{}: cannot be greater than {}",
+				opt, range_high
+			));
+		} else {
+			return value;
+		}
+	}
 };
 
 class ArgParser {
@@ -164,8 +189,9 @@ void usage() {
 		"	               encode, decode, filetest-bmp, filetest-jpeg. If not \n"
 		"	               specified, a default name will be chosen for you.\n"
 		"	-q QUALITY     A number from 0 to 100 specifying the quality of the image.\n"
-		"	               Accepted only by encode mode. If not specified, defaults\n"
-		"	               to 80.\n"
+		"	               Accepted only by encode mode. Defaults to 80.\n"
+		"	-s SUBSAMP     Divide dimensions of color components (Cb, Cr) by this number.\n"
+		"	               Must be either 1 or 2. Defaults to 2.\n"
 		"\nmain modes:\n"
 		"	scan           Reads a JPEG file and dumps all of its metadata to stdout.\n"
 		"	encode         Compress an input BMP file.\n"
@@ -197,7 +223,6 @@ std::tuple<const std::string&, const std::string&> io_file_args(
 	if (args.has_opt("-o")) {
 		return {in_file, args.options.at("-o")};
 	} else {
-		msg::debug("io_file_arg: default_out={}", default_out);
 		return {in_file, default_out};
 	}
 }
@@ -207,7 +232,8 @@ int main_inner(int argc, char* argv[]) {
 		{"--help", ArgParser::noconsume},
 		{"-h", ArgParser::noconsume},
 		{"-o", ArgParser::consume},
-		{"-q", ArgParser::consume}
+		{"-q", ArgParser::consume},
+		{"-s", ArgParser::consume}
 	}};
 
 	auto args = parser.parse(argc, argv);
@@ -256,15 +282,13 @@ int main_inner(int argc, char* argv[]) {
 		auto [infile, outfile] = io_file_args(args, "encode", default_jpeg);
 		if (infile == empty_path) return 1;
 
-		int quality = 80;
-		if (args.options.contains("-q")) {
-			quality = std::stoi(args.options["-q"]);
-		}
+		unsigned int quality = args.getopt_uint("-q", 80, 0, 100);
+		unsigned int subsamp = args.getopt_uint("-s", 2, 1, 2);
 
 		jpeg::BmpFile bmp_file { infile, std::ios_base::in };
-		jpeg::JpegEncoder encoder { (unsigned int) quality };
+		jpeg::JpegEncoder encoder { quality };
 
-		auto raws = bmp_file.read();
+		auto raws = bmp_file.read(subsamp);
 		auto encoded = encoder.encode(raws);
 
 		jpeg::JpegFile jpeg { outfile, std::ios_base::out };
