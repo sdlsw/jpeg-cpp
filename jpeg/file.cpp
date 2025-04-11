@@ -1065,7 +1065,12 @@ private:
 	// Initializes zero_y_map. See comment on that variable.
 	void init_zero_y_map() {
 		if (reverse_order) {
-			zero_y_map = (height / subsamp) * subsamp;
+			int m = height % subsamp;
+			if (m == 0) {
+				zero_y_map = height - subsamp;
+			} else {
+				zero_y_map = height - m;
+			}
 		} else {
 			zero_y_map = 0;
 		}
