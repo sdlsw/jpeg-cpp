@@ -90,6 +90,80 @@ public:
 	}
 };
 
+// Helper class for JpegFile. Reading version of JpegSegmentWriter. Reads the
+// 2-byte length field first, then counts remaining bytes in the segment as
+// they are read. `verify()` may then be called to ensure the correct number
+// of bytes have been consumed.
+class JpegSegmentReader {
+private:
+	std::fstream* file;
+	const std::string segment_name;
+	unsigned int segment_length;
+	int count = 0;
+public:
+	// Note: On construction, the reader will automatically attempt
+	// to read the length of the segment. This may throw an exception
+	// if at EOF.
+	JpegSegmentReader(
+		std::fstream& file,
+		std::string&& segment_name
+	) : file{&file}, segment_name{segment_name} {
+		msg::debug("READ_JPEG: process {}", segment_name);
+
+		// Byte count includes the 2 byte length of the byte count
+		// field itself, so use regular read function. This will result
+		// in `count` temporarily dropping to -2, hence it is `int`.
+		segment_length = read_uint16();
+		count += segment_length;
+	}
+
+	bool has_bytes() {
+		return count > 0;
+	}
+
+	// Verifies the segment we read. Does nothing on success, throws
+	// an exception if the segment was malformed.
+	void verify() {
+		if (count != 0) {
+			throw JpegFileError(std::format(
+				"{}: Bad segment read (len={} left={})",
+				segment_name, segment_length, count
+			));
+		}
+	}
+
+	uint8_t read_byte() {
+		auto in = (uint8_t) file->get();
+		--count;
+		return in;
+	}
+
+	uint16_t read_uint16() {
+		uint16_t h = read_byte();
+		uint16_t l = read_byte();
+		return (h << 8) | l;
+	}
+
+	// Reads a byte from the file that contains two four-bit values.
+	std::tuple<uint8_t, uint8_t> read_2x_uint4() {
+		uint8_t b = read_byte();
+		return { (b & 0xF0) >> 4, (b & 0x0F) };
+	}
+
+	// Reads everything remaining in the segment to a new vector. No need
+	// to verify() after this.
+	std::vector<uint8_t> read_all() {
+		std::vector<uint8_t> result;
+
+		result.reserve(count);
+		while (count > 0) {
+			result.push_back(read_byte());
+		}
+
+		return result;
+	}
+};
+
 // JPEG file reader/writer. All read functions will throw JpegFileError
 // in case of malformed JPEG files, since there is no way to reasonably recover
 // from that. In practice, malformed JPEG files are uncommon.
@@ -126,14 +200,6 @@ private:
 	void read_until_byte(uint8_t b) {
 		uint8_t rb = 0;
 		while (rb != b) rb = read_byte();
-	}
-
-	uint16_t read_uint16() {
-		// File is big-endian
-		uint16_t high = read_byte();
-		uint16_t low = read_byte();
-
-		return (high << 8) | low;
 	}
 
 	// Writes a JPEG file marker, 0xFFXX.
@@ -173,111 +239,66 @@ private:
 		return mark.is_soi();
 	}
 
-	// Reads segment size. In the file, this value includes the size of the
-	// length field itself (two bytes). This function returns the size
-	// of everything *after* the length field, and sets the cursor to
-	// the byte after it.
-	uint16_t read_segment_size() {
-		return read_uint16() - 2;
-	}
-
-	// Reads a byte from the file that contains two four-bit values.
-	std::tuple<uint8_t, uint8_t> read_2x_uint4() {
-		uint8_t b = read_byte();
-		return { (b & 0xF0) >> 4, (b & 0x0F) };
-	}
-
-	// Reads a segment consisting of only a length field followed by
-	// arbitrary binary data, placing that data into a byte vector.
-	void read_opaque_segment_to(std::vector<uint8_t>& dest) {
-		uint16_t length = read_segment_size();
-		msg::debug("READ_JPEG: reading opaque segment size {}", length);
-
-		dest.reserve(length);
-		while (length > 0) {
-			dest.push_back(read_byte());
-			length--;
-		}
-	}
-
 	// Reads a DRI (define restart interval) segment and sets this reader's
 	// current restart interval. This restart interval will be used for any
 	// following SOS (start of scan) segments, until new DRI segment is
 	// read.
 	void read_restart_interval() {
-		msg::debug("READ_JPEG: process DRI");
-
-		uint16_t segment_length = read_segment_size();
-
-		if (segment_length != 2) {
-			throw JpegFileError(std::format(
-				"DRI: Bad segment length {}", segment_length
-			));
-		}
-
-		restart_interval = read_uint16();
+		JpegSegmentReader seg { file, "DRI" };
+		restart_interval = seg.read_uint16();
+		seg.verify();
 	}
 
 	// Reads an application segment and places it in the compressed data
 	// package.
 	void read_appn_to(CompressedJpegData& j, int n) {
-		msg::debug("READ_JPEG: process APP{}", n);
-
+		JpegSegmentReader seg { file, std::format("APP{}", n) };
 		AppSegment appseg;
+
 		appseg.n = n;
-		read_opaque_segment_to(appseg.data);
+		appseg.data = seg.read_all();
 		j.app_segments().push_back(std::move(appseg));
 	}
 
 	// Reads a comment segment and places it in the compressed data
 	// package.
 	void read_comment_to(CompressedJpegData& j) {
-		msg::debug("READ_JPEG: process COM");
-
-		std::vector<uint8_t> dest;
-		read_opaque_segment_to(dest);
-		j.comments().push_back(std::move(dest));
+		JpegSegmentReader seg { file, "COM" };
+		j.comments().push_back(seg.read_all());
 	}
 
 	// Reads a SOF (start of frame) segment, and starts a new frame in the
 	// compressed JPEG data. Following SOS (start of scan) segments will
 	// start scans in this most recent frame.
 	void read_sof_to(CompressedJpegData& j, const StartOfFrameInfo& i) {
-		msg::debug("READ_JPEG: process {}", std::string(i));
-
-		uint16_t segment_length = read_segment_size();
+		JpegSegmentReader seg { file, std::string(i) };
 
 		Frame frame;
 		frame.sof_info = i;
 
-		frame.sample_precision = read_byte();
-		frame.num_lines = read_uint16();
-		frame.samples_per_line = read_uint16();
-		frame.num_components = read_byte();
+		frame.sample_precision = seg.read_byte();
+		frame.num_lines = seg.read_uint16();
+		frame.samples_per_line = seg.read_uint16();
+		frame.num_components = seg.read_byte();
 
-		segment_length -= 6;
-
-		while (segment_length > 0) {
+		for (int comp = 0; comp < frame.num_components; comp++) {
 			FrameComponentParams params;
 
-			params.identifier = read_byte();
+			params.identifier = seg.read_byte();
 
-			auto [h, v] = read_2x_uint4();
+			auto [h, v] = seg.read_2x_uint4();
 			params.horizontal_sampling_factor = h;
 			params.vertical_sampling_factor = v;
 
 			verify_param_under("(Hi-1)", h - 1, 4);
 			verify_param_under("(Vi-1)", v - 1, 4);
 
-			params.qtable_selector = read_byte();
+			params.qtable_selector = seg.read_byte();
 
 			frame.component_params.push_back(params);
-			segment_length -= 3;
 		}
 
-		if (segment_length != 0) {
-			throw JpegFileError("unexpected final value for length while reading SOF, abort");
-		}
+		seg.verify();
 
 		j.frames().push_back(std::move(frame));
 	}
@@ -292,12 +313,12 @@ private:
 	// defined tables to their appropriate places in the CompressedJpegData
 	// object.
 	void read_qtable_to(CompressedJpegData& j) {
-		msg::debug("READ_JPEG: process DQT");
+		JpegSegmentReader seg { file, "DQT" };
 
-		uint16_t length = read_segment_size();
-
-		while (length > 0) {
-			auto [pq_precision, tq_destination] = read_2x_uint4();
+		// No way to tell how many tables left without just tracking
+		// byte count (no table count parameter).
+		while (seg.has_bytes()) {
+			auto [pq_precision, tq_destination] = seg.read_2x_uint4();
 
 			verify_param_under("Tq", tq_destination, 4);
 			verify_param_under("Pq", pq_precision, 2);
@@ -314,10 +335,10 @@ private:
 
 				if (pq_precision == 0) {
 					//8-bit precision
-					value = read_byte();
+					value = seg.read_byte();
 				} else {
 					//16-bit precision (pq = 1)
-					value = read_uint16();
+					value = seg.read_uint16();
 				}
 
 				auto& valref = qtable.data.zz(i);
@@ -325,29 +346,22 @@ private:
 			}
 
 			qtable.set = true;
-			length -= 65 + 64*pq_precision;
 		}
 
-		if (length != 0) {
-			throw JpegFileError("unexpected final value for length while reading qtables, abort");
-		}
+		seg.verify();
 	}
 
 	// Reads a DHT (define huffman table) segment, and installs the
 	// defined tables to their appropriate places in the CompressedJpegData
 	// object.
 	void read_hufftable_to(CompressedJpegData& j) {
-		msg::debug("READ_JPEG: process DHT");
+		JpegSegmentReader seg { file, "DHT" };
 
-		uint16_t segment_length = read_segment_size();
-
-		while (segment_length > 0) {
-			auto [tc_table_class, th_destination] = read_2x_uint4();
+		while (seg.has_bytes()) {
+			auto [tc_table_class, th_destination] = seg.read_2x_uint4();
 
 			verify_param_under("Th", th_destination, 4);
 			verify_param_under("Tc", tc_table_class, 2);
-
-			segment_length--;
 
 			auto _class = TableClass(tc_table_class);
 			HuffmanTable& hufftable = j.huff_tables(_class)[th_destination];
@@ -364,10 +378,8 @@ private:
 			// Read row lengths first.
 			std::vector<uint8_t> row_lengths;
 			for (int i = 0; i < 16; i++) {
-				uint8_t len = read_byte();
-
+				uint8_t len = seg.read_byte();
 				row_lengths.push_back(len);
-				segment_length--;
 			}
 
 			// Using the length declarations, read huffman table.
@@ -376,7 +388,7 @@ private:
 			for (int i = 0; i < 16; i++) {
 				auto huff_row_length = row_lengths[i];
 				while (huff_row_length > 0) {
-					uint8_t val = read_byte();
+					uint8_t val = seg.read_byte();
 
 					HuffmanCode entry;
 					entry.value = val;
@@ -384,7 +396,6 @@ private:
 
 					hufftable.codes.push_back(entry);
 					huff_row_length--;
-					segment_length--;
 				}
 			}
 
@@ -393,11 +404,7 @@ private:
 			hufftable.set = true;
 		}
 
-		if (segment_length != 0) {
-			throw JpegFileError(
-				"unexpected final value for length while reading hufftables, abort"
-			);
-		}
+		seg.verify();
 	}
 
 	// Currently does nothing, since arithmetic coding is not implemented.
@@ -410,50 +417,41 @@ private:
 	// the following entropy coded data segments until the next non-RST
 	// marker.
 	void read_scan_to(CompressedJpegData& j) {
-		msg::debug("READ_JPEG: process SOS");
+		JpegSegmentReader seg { file, "SOS" };
 
 		if (j.frames().size() == 0) {
 			throw JpegFileError("encountered SOS marker before SOF");
 		}
 
-		uint16_t segment_length = read_segment_size();
-
 		Scan scan;
 		scan.restart_interval = restart_interval; // Defined earlier by DRI
-		scan.num_components = read_byte();
-		segment_length--;
+		scan.num_components = seg.read_byte();
 
 		verify_param_under("(Ns-1)", scan.num_components - 1, 4);
 
 		for (int i = 0; i < scan.num_components; i++) {
 			ScanComponentParams params;
 
-			params.component_selector = read_byte();
+			params.component_selector = seg.read_byte();
 
-			auto [dc_sel, ac_sel] = read_2x_uint4();
+			auto [dc_sel, ac_sel] = seg.read_2x_uint4();
 			params.dc_entropy_coding_selector = dc_sel;
 			params.ac_entropy_coding_selector = ac_sel;
 
 			verify_param_under("DcSel", dc_sel, 4);
 			verify_param_under("AcSel", ac_sel, 4);
 
-			segment_length -= 2;
-
 			scan.component_params.push_back(params);
 		}
 
-		scan.start_spectral_sel = read_byte();
-		scan.end_spectral_sel = read_byte();
+		scan.start_spectral_sel = seg.read_byte();
+		scan.end_spectral_sel = seg.read_byte();
 
-		auto [h, l] = read_2x_uint4();
+		auto [h, l] = seg.read_2x_uint4();
 		scan.succ_approx_high = h;
 		scan.succ_approx_low = l;
 
-		segment_length -= 3;
-
-		if (segment_length != 0) {
-			throw JpegFileError("unexpected final value for length while reading SOS, abort");
-		}
+		seg.verify();
 
 		read_entropy_coded_data_to(scan);
 
@@ -463,6 +461,8 @@ private:
 	// Reads entropy coded data segments to the given Scan, until a non-RST
 	// marker is encountered.
 	void read_entropy_coded_data_to(Scan& s) {
+		// No JpegSegmentReader here, entropy coded data does not
+		// include a length header, unlike every other segment.
 		msg::debug("READ_JPEG: Consume ECS sequence");
 
 		uint8_t b = read_byte();
