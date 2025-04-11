@@ -13,11 +13,21 @@ using std::int32_t;
 import :data;
 
 export namespace jpeg {
+// Used to indicate failure to process a JPEG file.
 class JpegFileError : public std::runtime_error {
 public:
 	using std::runtime_error::runtime_error;
 };
 
+// Helper class for JpegFile. Each segment in a JPEG file must start with
+// the number of bytes in the segment (including the 2 bytes for the length
+// value). To make this easier, we copy the data to a vector first, then call
+// commit() to write the whole segment at once, including the length.
+//
+// This is a little less efficient than calculating the segment size ahead
+// of time, but in practice it doesn't matter much. By far the largest amount
+// of data is in the entropy coded segments, which are not written through
+// JpegSegmentWriter as they aren't preceded by a length value.
 class JpegSegmentWriter {
 private:
 	std::fstream* file;
@@ -31,6 +41,7 @@ private:
 		return { h, l };
 	}
 
+	// Writes the length of the segment to file.
 	void put_length() {
 		auto [h, l] = uint16_be(data.size() + 2);
 		file->put(h);
@@ -41,6 +52,7 @@ public:
 		this->file = &file;
 	}
 
+	// Writes the complete segment to file.
 	void commit() {
 		put_length();
 		for (auto& x : data) {
@@ -48,22 +60,27 @@ public:
 		}
 	}
 
+	// Writes a byte to the segment.
 	void write_byte(uint8_t b) {
 		data.push_back(b);
 	}
 
+	// Writes an unsigned 16-bit integer to the segment.
 	void write_uint16(uint16_t x) {
 		auto [h, l] = uint16_be(x);
 		data.push_back(h);
 		data.push_back(l);
 	}
 
+	// Writes two 4-bit integers as one byte - common in the JPEG
+	// headers. Bits: HHHHLLLL.
 	void write_2x_uint4(uint8_t h, uint8_t l) {
 		l &= 0x0F;
 
 		data.push_back((h << 4) | l);
 	}
 
+	// Writes a string to the segment, including null terminator.
 	void write_str(const std::string& s) {
 		for (auto& c : s) {
 			data.push_back(c);
@@ -73,16 +90,18 @@ public:
 	}
 };
 
+// JPEG file reader/writer. All read functions will throw JpegFileError
+// in case of malformed JPEG files, since there is no way to reasonably recover
+// from that. In practice, malformed JPEG files are uncommon.
 class JpegFile {
 private:
 	std::fstream file;
 	std::ios_base::openmode mode;
 	uint16_t restart_interval = 0;
 
-	// Ensures a parameter is under param_limit, throwing an exception
+	// Ensures a header parameter is under param_limit, throwing an exception
 	// if not. The majority of JPEG parameters are unsigned and have a
-	// lower bound of 0, so it is sufficient to check only an upper bound
-	// in many cases.
+	// lower bound of 0, so it is sufficient to check only an upper bound.
 	template<std::integral T>
 	static void verify_param_under(const std::string& param_name, T param, uint16_t param_limit) {
 		if (param >= param_limit) {
@@ -95,10 +114,15 @@ private:
 		}
 	}
 
+	// Reads one byte from the JPEG file. Automatically converts from the
+	// `int` returned by `file.get` since exceptions are enabled - checking
+	// for error returns is unnecessary.
 	uint8_t read_byte() {
 		return (uint8_t) file.get();
 	}
 
+	// Reads bytes until the value `b` is encountered. The file cursor
+	// will be placed immediately after it.
 	void read_until_byte(uint8_t b) {
 		uint8_t rb = 0;
 		while (rb != b) rb = read_byte();
@@ -112,16 +136,17 @@ private:
 		return (high << 8) | low;
 	}
 
+	// Writes a JPEG file marker, 0xFFXX.
 	void write_marker(const Marker& m) {
 		file.put(0xFF).put(m);
 	}
 
-	// Shortcut, allow writing a special marker constant directly
+	// Shortcut, allows writing a special marker constant directly
 	void write_marker(MarkerSpecial m) {
 		file.put(0xFF).put((uint8_t)m);
 	}
 
-	// Read next marker, placing the cursor after the two byte marker value.
+	// Reads next marker, placing the cursor after the two byte marker value.
 	// If for some reason no valid marker could be read, an invalid marker
 	// is returned.
 	Marker read_next_marker() {
@@ -139,6 +164,9 @@ private:
 		return Marker(0x00);
 	}
 
+	// Returns `true` if the next marker in the file is SOI (start of
+	// image), and `false` otherwise. May throw std::ios_base::failure if EOF is
+	// reached.
 	bool read_expect_soi() {
 		Marker mark = read_next_marker();
 		if (!mark.is_valid()) return false;
@@ -153,14 +181,14 @@ private:
 		return read_uint16() - 2;
 	}
 
-	// Read a byte from the file, that contains two four-bit values.
+	// Reads a byte from the file that contains two four-bit values.
 	std::tuple<uint8_t, uint8_t> read_2x_uint4() {
 		uint8_t b = read_byte();
 		return { (b & 0xF0) >> 4, (b & 0x0F) };
 	}
 
 	// Reads a segment consisting of only a length field followed by
-	// arbitrary binary data.
+	// arbitrary binary data, placing that data into a byte vector.
 	void read_opaque_segment_to(std::vector<uint8_t>& dest) {
 		uint16_t length = read_segment_size();
 		msg::debug("READ_JPEG: reading opaque segment size {}", length);
@@ -172,20 +200,10 @@ private:
 		}
 	}
 
-	void read_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
-		if (marker.is_appn()) {
-			read_appn_to(j, marker.parse_appn());
-		} else if (marker.is_sof()) {
-			read_sof_to(j, marker.parse_sof());
-		} else if (marker.is_rstn()) {
-			read_rstn_to(j, marker.parse_rstn());
-		} else if (marker.is_res() || marker.is_jpgn()) {
-			msg::warn("Skipping reserved marker {}", std::string(marker));
-		} else {
-			read_special_marker_segment_to(j, marker);
-		}
-	}
-
+	// Reads a DRI (define restart interval) segment and sets this reader's
+	// current restart interval. This restart interval will be used for any
+	// following SOS (start of scan) segments, until new DRI segment is
+	// read.
 	void read_restart_interval() {
 		msg::debug("READ_JPEG: process DRI");
 
@@ -197,11 +215,11 @@ private:
 			));
 		}
 
-		// Save restart interval for later. It will be applied to any
-		// following parsed SOS segments.
 		restart_interval = read_uint16();
 	}
 
+	// Reads an application segment and places it in the compressed data
+	// package.
 	void read_appn_to(CompressedJpegData& j, int n) {
 		msg::debug("READ_JPEG: process APP{}", n);
 
@@ -211,6 +229,8 @@ private:
 		j.app_segments().push_back(std::move(appseg));
 	}
 
+	// Reads a comment segment and places it in the compressed data
+	// package.
 	void read_comment_to(CompressedJpegData& j) {
 		msg::debug("READ_JPEG: process COM");
 
@@ -219,6 +239,9 @@ private:
 		j.comments().push_back(std::move(dest));
 	}
 
+	// Reads a SOF (start of frame) segment, and starts a new frame in the
+	// compressed JPEG data. Following SOS (start of scan) segments will
+	// start scans in this most recent frame.
 	void read_sof_to(CompressedJpegData& j, const StartOfFrameInfo& i) {
 		msg::debug("READ_JPEG: process {}", std::string(i));
 
@@ -259,10 +282,15 @@ private:
 		j.frames().push_back(std::move(frame));
 	}
 
+	// Currently does nothing, just announces that we stepped over a RSTn
+	// (restart N) marker.
 	void read_rstn_to(CompressedJpegData& j, int n) {
 		msg::debug("READ_JPEG: process RST{}", n);
 	}
 
+	// Reads a DQT (define quantization table) segment, and installs the
+	// defined tables to their appropriate places in the CompressedJpegData
+	// object.
 	void read_qtable_to(CompressedJpegData& j) {
 		msg::debug("READ_JPEG: process DQT");
 
@@ -305,6 +333,9 @@ private:
 		}
 	}
 
+	// Reads a DHT (define huffman table) segment, and installs the
+	// defined tables to their appropriate places in the CompressedJpegData
+	// object.
 	void read_hufftable_to(CompressedJpegData& j) {
 		msg::debug("READ_JPEG: process DHT");
 
@@ -369,10 +400,15 @@ private:
 		}
 	}
 
+	// Currently does nothing, since arithmetic coding is not implemented.
 	void read_arithtable_to(CompressedJpegData& j) {
 		msg::debug("READ_JPEG: process DAC");
 	}
 
+	// Reads a SOS (start of scan) segment and adds it to the most recent
+	// frame in the CompressedJpegData object. This also consumes all of
+	// the following entropy coded data segments until the next non-RST
+	// marker.
 	void read_scan_to(CompressedJpegData& j) {
 		msg::debug("READ_JPEG: process SOS");
 
@@ -424,6 +460,8 @@ private:
 		j.frames().back().scans.push_back(std::move(scan));
 	}
 
+	// Reads entropy coded data segments to the given Scan, until a non-RST
+	// marker is encountered.
 	void read_entropy_coded_data_to(Scan& s) {
 		msg::debug("READ_JPEG: Consume ECS sequence");
 
@@ -468,6 +506,10 @@ private:
 		}
 	}
 
+	// Reads a "special" segment to the given CompressedJpegData object.
+	// Special markers are any marker that does not contain additional
+	// information in its value. So, we can call Marker::parse_special once
+	// and then use `switch`.
 	void read_special_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
 		switch (marker.parse_special()) {
 		case MarkerSpecial::dqt_define_quant_table:
@@ -508,6 +550,25 @@ private:
 		}
 	}
 
+	// Reads a segment to the given CompressedJpegData object, depending
+	// on the Marker that was read just before.
+	void read_marker_segment_to(CompressedJpegData& j, const Marker& marker) {
+		if (marker.is_appn()) {
+			read_appn_to(j, marker.parse_appn());
+		} else if (marker.is_sof()) {
+			read_sof_to(j, marker.parse_sof());
+		} else if (marker.is_rstn()) {
+			read_rstn_to(j, marker.parse_rstn());
+		} else if (marker.is_res() || marker.is_jpgn()) {
+			msg::warn("Skipping reserved marker {}", std::string(marker));
+		} else {
+			read_special_marker_segment_to(j, marker);
+		}
+	}
+
+	// Writes the APP0 segment describing this JPEG as a JFIF-compliant
+	// file. Nearly all JPEGs found on the internet today are JFIF. (At
+	// least all the onces I've tested)
 	void write_jfif_header(const CompressedJpegData& j) {
 		msg::debug("WRITE_JPEG: output JFIF header");
 
@@ -515,7 +576,7 @@ private:
 
 		write_marker(Marker::appn(0));
 		seg.write_str("JFIF");
-		seg.write_uint16(0x0102); // JFIF version
+		seg.write_uint16(0x0102); // JFIF version 1.02
 		seg.write_byte(0);        // X/Y density unit (0 = no unit)
 
 		// X, Y density (just use pixels)
@@ -529,6 +590,7 @@ private:
 		seg.commit();
 	}
 
+	// Writes a DHT (define huffman table) segment to this file.
 	void write_hufftable(const HuffmanTable& table, uint8_t dest, TableClass cls) {
 		msg::debug("WRITE_JPEG: output {} Huffman table {}", str_from_table_class.at(cls), dest);
 		JpegSegmentWriter seg { file };
@@ -547,6 +609,7 @@ private:
 		seg.commit();
 	}
 
+	// Writes a DQT (define quantization table) segment to this file.
 	void write_qtable(const QuantizationTable& table, uint8_t dest) {
 		msg::debug("WRITE_JPEG: output quantization table {}", dest);
 		JpegSegmentWriter seg { file };
@@ -566,6 +629,8 @@ private:
 		seg.commit();
 	}
 
+	// Writes every set Huffman table in the given CompressedJpegData object
+	// to this file.
 	void write_all_hufftables(const CompressedJpegData& j, TableClass cls) {
 		auto& tbls = j.huff_tables(cls);
 
@@ -575,6 +640,8 @@ private:
 		}
 	}
 
+	// Writes every set quantization table in the given CompressedJpegData
+	// object to this file.
 	void write_all_qtables(const CompressedJpegData& j) {
 		auto& tbls = j.q_tables();
 
@@ -584,6 +651,8 @@ private:
 		}
 	}
 
+	// Writes a SOF (start of frame) segment to this file for the given
+	// frame.
 	void write_sof(const Frame& f) {
 		msg::debug("WRITE_JPEG: output SOF segment");
 		JpegSegmentWriter seg { file };
@@ -610,6 +679,8 @@ private:
 		seg.commit();
 	}
 
+	// Writes a SOS (start of scan) segment to this file for the given
+	// scan.
 	void write_sos(const Scan& s) {
 		msg::debug("WRITE_JPEG: write SOS segment");
 		JpegSegmentWriter seg { file };
@@ -637,6 +708,8 @@ private:
 		seg.commit();
 	}
 
+	// Writes a DRI (define restart interval) segment to this file.
+	// Should be written before any scans.
 	void write_dri(uint16_t restart_interval) {
 		msg::debug("WRITE_JPEG: write DRI segment");
 		JpegSegmentWriter seg { file };
@@ -645,6 +718,7 @@ private:
 		seg.commit();
 	}
 
+	// Writes the entropy coded data from a given scan to this file.
 	void write_entropy_coded_data(const Scan& s) {
 		msg::debug("WRITE_JPEG: writing entropy coded data...");
 		uint8_t rst_n = 0;
@@ -663,7 +737,12 @@ private:
 		}
 	}
 
+	// Writes a given scan to this file.
 	void write_scan(const Scan& s) {
+		// For now this is fine, since we only ever write one scan
+		// with all components interleaved. In the future for
+		// multi-scan JPEGs, might want to write DRI once before all
+		// the scans.
 		if (s.restart_interval > 0) {
 			write_dri(s.restart_interval);
 		}
@@ -745,6 +824,11 @@ public:
 
 #pragma pack(push, 1)
 
+// Represents the image header of a BMP file, specifically the Windows 3.x
+// version. The defaults listed here are used to simplify writing in
+// BmpFile::write().
+//
+// See https://www.fileformat.info/format/bmp/egff.htm
 struct BmpImageHeader {
 	uint32_t _header_size = sizeof(BmpImageHeader);
 	uint32_t _width = 0;
@@ -778,6 +862,8 @@ struct BmpImageHeader {
 	}
 };
 
+// Represents the initial file header of a BMP. The `_type` field must always
+// be 'BM'.
 struct BmpFileHeader {
 	char _type[2] { 'B', 'M' };
 	uint32_t _file_size = 0;
@@ -799,11 +885,14 @@ struct BmpFileHeader {
 
 #pragma pack(pop)
 
+// Used to indicate failure to process a BMP file.
 class BmpFileError : public std::runtime_error {
 public:
 	using std::runtime_error::runtime_error;
 };
 
+// Represents a pixel in YCbCr color space. Note that we order the color
+// components as JPEGs in the wild do, YCrCb (red first).
 struct YCbCrPixel {
 	uint8_t y;
 	uint8_t cr;
@@ -818,19 +907,22 @@ struct YCbCrPixel {
 	}
 };
 
-// Given some dimension or other value v, calculate how
-// much we need to add to v to reach the first integer multiple of d greater
-// than or equal to v.
+// Given some dimension or other value v, calculate how much we need to add to
+// v to reach the first integer multiple of d greater than or equal to v.
 uint32_t calc_pad(uint32_t v, uint32_t d) {
 	uint32_t pad = d - v%d;
 	if (pad == d) pad = 0;
 	return pad;
 }
 
+// Calculates the number of padding bytes to use per row in a BMP file, given
+// the width of the rows in pixels.
 uint8_t calc_bmp_padding_bytes(uint32_t width) {
 	return calc_pad(width*3, 4);
 }
 
+// Converts a double value to a uint8_t, clamping the value to the limits of
+// an 8 bit unsigned integer.
 uint8_t clamped_convert(double x) {
 	if (x < 0.0) return 0;
 	if (x > 255.0) return 255;
@@ -851,15 +943,53 @@ private:
 	bool first_read = true;
 	uint32_t consumed_rows = 0;
 
-	// Our own padding in `rows` to simplify padding operations
+	// Our own pixel padding in `rows` to simplify padding operations. Must
+	// be an integer multiple of `subsamp`.
 	uint32_t width_padded;
 
 	// BMP padding bytes. Required to properly read pixel data.
 	uint32_t file_padding_bytes;
 
-	// What image coordinate does y=0 currently correspond to?
+	// What image row does a sampling coordinate of y=0 currently
+	// correspond to?
+	//
+	// For these examples, we use a `subsamp` value of 3. If
+	// `reverse_order` is false, then `zero_y_map` starts at zero and
+	// increments by 3 as the window advances through the file - this is
+	// the same order as the image (top-down).
+	//
+	//                   y   windows
+	//                      ______...
+	// zero_y_map=0 ---> 0 |      ...
+	//                   1 |      ...   BMP FILE
+	//                   2 |______...      |
+	// zero_y_map=3 ---> 0 |      ...      |
+	//                   1 |      ...      V
+	//                   2 |______...
+	//                   ...
+	//
+	// However if `reverse_order` is true, then `zero_y_map` starts at the last
+	// multiple of 3 contained in the image and decrements by 3, since the
+	// BMP is storing the rows bottom-up. The sampling coordinate y is also 
+	// inverted.
+	//
+	//                     y   windows
+	//                        ______...
+	//                     2 |      ...
+	//                     1 |      ...   BMP FILE
+	// zero_y_map=L   ---> 0 |______...      |
+	//                     2 |      ...      |
+	//                     1 |      ...      V
+	// zero_y_map=L-3 ---> 0 |______...
+	//                     ...
+	//
+	// IMPORTANT: All private functions not explicitly mentioning
+	// zero_y_map use *internal* y coordinates: y=0 always refers to the
+	// first row of the `rows` vector, regardless of `reverse_order`. 
 	uint32_t zero_y_map;
 
+	// Calculates the index into the `rows` vector given (x, y)
+	// coordinates.
 	unsigned int coord(unsigned int x, unsigned int y) const {
 		if (y >= subsamp) throw BmpFileError("coord: bad y");
 		if (x >= width_padded) throw BmpFileError("coord: bad x");
@@ -867,6 +997,7 @@ private:
 		return y*width_padded + x;
 	}
 
+	// Copies row y=`from` to y=`to`.
 	void copy_row(unsigned int from, unsigned int to) {
 		unsigned int x0_from = coord(0, from);
 		unsigned int x0_to = coord(0, to);
@@ -876,30 +1007,31 @@ private:
 		}
 	}
 
+	// If we have horizontal subsample padding, copy the last pixel
+	// to the rest of the columns for better averages
 	void x_copy(unsigned int y) {
-		// If we have horizontal subsample padding, copy the last pixel
-		// to the rest of the columns for better averages
 		for (int i = width; i < width_padded; i++) {
 			rows[coord(i, y)] = rows[coord(width - 1, y)];
 		}
 	}
 
-	// Copy row `first_filled` to all lower rows. If first_filled == 0,
-	// this does nothing.
+	// Copies row y=`first_filled` to all rows of lower y coordinate. If
+	// first_filled == 0, this does nothing.
 	void y_copy_lower(unsigned int first_filled) {
 		for (int y = 0; y < first_filled; y++) {
 			copy_row(first_filled, y);
 		}
 	}
 
-	// Copy row `last_filled` to all higher rows. If last_filled
+	// Copies row `last_filled` to all rows of higher y coordinate. If
+	// last_filled == subsamp - 1 this does nothing.
 	void y_copy_upper(unsigned int last_filled) {
 		for (int y = last_filled + 1; y < subsamp; y++) {
 			copy_row(last_filled, y);
 		}
 	}
 
-	// Consume padding bytes, as specified by BMP standard. If
+	// Consumes padding bytes, as specified by BMP standard. If
 	// `file_padding_bytes` == 0, this does nothing.
 	void consume_padding_bytes() {
 		for (int i = 0; i < file_padding_bytes; i++) {
@@ -907,7 +1039,7 @@ private:
 		}
 	}
 
-	// Consume a row from the file, including all BMP padding.
+	// Consumes a row from the file, including all BMP padding.
 	void consume_row(unsigned int y) {
 		unsigned int x0 = coord(0, y);
 		for (unsigned int x = 0; x < width; x++) {
@@ -930,6 +1062,7 @@ private:
 		consume_padding_bytes();
 	}
 
+	// Initializes zero_y_map. See comment on that variable.
 	void init_zero_y_map() {
 		if (reverse_order) {
 			zero_y_map = (height / subsamp) * subsamp;
@@ -938,6 +1071,7 @@ private:
 		}
 	}
 
+	// Advances zero_y_map. See comment on that variable.
 	void inc_zero_y_map() {
 		if (reverse_order) {
 			zero_y_map -= subsamp;
@@ -962,6 +1096,8 @@ public:
 		this->file_padding_bytes = calc_bmp_padding_bytes(width);
 		this->width_padded = width + calc_pad(width, subsamp);
 
+		// Init rows. This vector will never be resized, only written
+		// over.
 		rows.reserve(subsamp*width_padded);
 		for (int i = 0; i < subsamp*width_padded; i++) {
 			rows.push_back(YCbCrPixel(0, 0, 0));
@@ -974,8 +1110,8 @@ public:
 		return file->eof() || consumed_rows >= height;
 	}
 
-	// Advance the window by `subsamp` rows. Returns true if there is more
-	// data to process, false otherwise.
+	// Advances the window by `subsamp` rows. Returns true if we were able
+	// to advance, false otherwise.
 	bool advance() {
 		if (no_more_rows()) return false;
 
@@ -1009,8 +1145,20 @@ public:
 		return true;
 	}
 
+	// Samples the window. If comp=0 (luma) no subsampling is performed;
+	// the exact luma value at (x, y) of this window will be returned.
+	//
+	// If comp=1,2 (chroma), then samp_y is ignored and a subsamp^2 square
+	// will be averaged to produce the subsampled value, starting at `samp_x`.
+	// For example, with subsamp=3, samp_x=3:
+	//
+	//  x 012345678...
+	// y     V
+	// 0  ...sss......
+	// 1  ...sss......
+	// 2  ...sss......
+	// 
 	uint8_t sample(unsigned int samp_x, unsigned int samp_y, unsigned int comp) const {
-		// if luma, do not subsample
 		if (comp == 0) {
 			unsigned int internal_y = samp_y;
 			if (reverse_order) internal_y = subsamp - samp_y - 1;
@@ -1039,20 +1187,26 @@ private:
 	std::fstream file;
 	std::ios_base::openmode mode;
 
+	// Writes a generic type byte-for-byte out to the file.
 	template<typename T>
 	void write_generic(const T& x) {
 		// File is little-endian, so can just write stuff out directly
 		file.write(reinterpret_cast<const char*>(&x), sizeof(x));
 	}
 
+	// Writes a BMP file header. The parameters other than file_size are
+	// determined by the default values specified in BmpFileHeader.
 	void write_file_header(uint32_t file_size) {
 		write_generic(BmpFileHeader(file_size));
 	}
 
+	// Writes a BMP image header. Same deal as write_file_header.
 	void write_image_header(uint32_t width, uint32_t height) {
 		write_generic(BmpImageHeader(width, height));
 	}
 
+	// Reads a generic type byte-for-byte from the file. Must be manually
+	// instantiated, for example `auto x = read_generic<MyType>();`.
 	template<typename T>
 	T read_generic() {
 		T hdr;
@@ -1083,6 +1237,7 @@ public:
 		return mode == std::ios_base::out;
 	}
 
+	// Reads this BMP file with some degree of chroma subsampling.
 	std::vector<RawComponent> read(uint8_t subsamp=2) {
 		if (!is_read_mode()) throw BmpFileError("BmpFile: cannot read() in write mode");
 
