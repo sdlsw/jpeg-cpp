@@ -372,6 +372,8 @@ const HuffmanTable hufftable_ac1 {
         { 0, 16, 0xFA }
 };
 
+// Base quantization tables for luma and chroma components, corresponding to a
+// quality value of 50.
 const QuantizationTable qtable_base_luma {
 	16, 11, 10, 16, 24,  40,  51,  61,
 	12, 12, 14, 19, 26,  58,  60,  55,
@@ -394,22 +396,24 @@ const QuantizationTable qtable_base_chroma {
 	99, 99, 99, 99, 99, 99, 99, 99
 };
 
-// Calculate a multiplier for the base quantization tables
+// Calculates a multiplier for the base quantization tables
 // based on a quality scale from 0-100.
 //
-// quality_factor(0) = base
+// quality_factor(0) = b
 // quality_factor(50) = 1
-// quality_factor(100) = 1/base
+// quality_factor(100) = 1/b
 double quality_factor(unsigned int quality) {
-	double base = 50.0;
+	double b = 50.0;
 
 	if (quality > 100) {
 		throw std::invalid_argument("quality_factor: quality must be between 0 and 100");
 	}
 
-	return std::pow(base, 1.0 - quality/50.0);
+	return std::pow(b, 1.0 - quality/50.0);
 }
 
+// Generates a quantization table to use for encoding, based on a quality scale
+// from 0-100.
 QuantizationTable generate_qtable(const QuantizationTable& base, unsigned int quality) {
 	double qfactor = quality_factor(quality);
 	msg::debug("TABLE: generate_qtable: quality={}, qfactor={}", quality, qfactor);
