@@ -270,11 +270,11 @@ private:
 	// Reads a SOF (start of frame) segment, and starts a new frame in the
 	// compressed JPEG data. Following SOS (start of scan) segments will
 	// start scans in this most recent frame.
-	void read_sof_to(CompressedJpegData& j, const StartOfFrameInfo& i) {
+	void read_sof_to(CompressedJpegData& j, const FrameType& i) {
 		JpegSegmentReader seg { file, std::string(i) };
 
 		Frame frame;
-		frame.sof_info = i;
+		frame.type = i;
 
 		frame.sample_precision = seg.read_byte();
 		frame.num_lines = seg.read_uint16();
@@ -535,7 +535,7 @@ private:
 		case MarkerSpecial::dnl_define_num_lines:
 			msg::error(
 				"READ_JPEG: Skipping unsupported marker {}",
-				symbol_from_special_marker[marker.parse_special()]
+				symbol_from_special_marker.at(marker.parse_special())
 			);
 			// TODO
 			break;
@@ -657,7 +657,7 @@ private:
 		msg::debug("WRITE_JPEG: output SOF segment");
 		JpegSegmentWriter seg { file };
 
-		write_marker(Marker::sof(f.sof_info));
+		write_marker(Marker::sof(f.type));
 		seg.write_byte(f.sample_precision);
 		seg.write_uint16(f.num_lines);
 		seg.write_uint16(f.samples_per_line);

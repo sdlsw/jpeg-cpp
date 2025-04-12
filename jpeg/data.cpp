@@ -36,246 +36,9 @@ constexpr auto generate_order_inverse(const std::array<uint8_t, 64>& order) {
 
 const std::array<uint8_t, 64> row_order_from_zigzag_order = generate_order_inverse(zigzag_order_from_row_order);
 
-export namespace jpeg {
-enum class StartOfFrameType : uint8_t {
-	baseline_seq = 0,
-	extended_seq = 1,
-	progressive =  2,
-	lossless =     3 // always sequential
-};
-
-std::map<StartOfFrameType, std::string> str_from_sof_type {
-	{StartOfFrameType::baseline_seq, "BASELINE_SEQUENTIAL"},
-	{StartOfFrameType::extended_seq, "EXTENDED_SEQUENTIAL"},
-	{StartOfFrameType::progressive,  "PROGRESSIVE"},
-	{StartOfFrameType::lossless,     "LOSSLESS"}
-};
-
-enum class CodingType : uint8_t {
-	huffman =    0,
-	arithmetic = 1
-};
-
-std::map<CodingType, std::string> str_from_coding_type {
-	{CodingType::huffman,    "HUFFMAN"},
-	{CodingType::arithmetic, "ARITHMETIC"}
-};
-
-struct StartOfFrameInfo {
-	StartOfFrameType type = StartOfFrameType::baseline_seq;
-	CodingType coding = CodingType::huffman;
-	bool is_differential = false;
-
-	StartOfFrameInfo() = default;
-	StartOfFrameInfo(StartOfFrameType sof_t, CodingType ct, bool diff) :
-		type{sof_t}, coding{ct}, is_differential{diff} {}
-
-	// From marker char. In this case, the enum definitions
-	// we're using line up with the values given in the standard,
-	// so just use bit magic to get them.
-	StartOfFrameInfo(unsigned char m) :
-		type{StartOfFrameType(m & 0x03)},
-		coding{CodingType((m & 0x08) >> 3)},
-		is_differential{bool(m & 0x04)} {}
-
-	bool is_baseline() const {
-		return type == StartOfFrameType::baseline_seq;
-	}
-
-	uint8_t marker_value() const {
-		return (
-			0xC0 |
-			((uint8_t) type) |
-			(((uint8_t) coding) << 3) |
-			(((uint8_t) is_differential) << 2)
-		);
-	}
-
-	explicit operator std::string() const {
-		return std::format(
-			"SOF {} | {}DIFFERENTIAL | {}-CODED",
-			str_from_sof_type[type],
-			(is_differential) ? "" : "NON-",
-			str_from_coding_type[coding]
-		);
-	}
-};
-
-// See Table B.1 - Marker code assignments
-enum class MarkerSpecial : uint8_t {
-	tem_temporary_use =                   0x01,
-
-	dht_define_huff_table =               0xC4,
-	jpg_reserved =                        0xC8,
-	dac_define_arith_coding =             0xCC,
-
-	// Other markers
-	soi_start_of_img =                    0xD8,
-	eoi_end_of_img =                      0xD9,
-	sos_start_of_scan =                   0xDA,
-	dqt_define_quant_table =              0xDB,
-	dnl_define_num_lines =                0xDC,
-	dri_define_rst_interval =             0xDD,
-	dhp_define_hierarchical_progression = 0xDE,
-	exp_expand_reference_components =     0xDF,
-	com_comment =                         0xFE
-};
-
-std::map<MarkerSpecial, std::string> symbol_from_special_marker {
-	{MarkerSpecial::tem_temporary_use,                   "TEM*"},
-	{MarkerSpecial::dht_define_huff_table,               "DHT"},
-	{MarkerSpecial::jpg_reserved,                        "JPG"},
-	{MarkerSpecial::dac_define_arith_coding,             "DAC"},
-	{MarkerSpecial::soi_start_of_img,                    "SOI*"},
-	{MarkerSpecial::eoi_end_of_img,                      "EOI*"},
-	{MarkerSpecial::sos_start_of_scan,                   "SOS"},
-	{MarkerSpecial::dqt_define_quant_table,              "DQT"},
-	{MarkerSpecial::dnl_define_num_lines,                "DNL"},
-	{MarkerSpecial::dri_define_rst_interval,             "DRI"},
-	{MarkerSpecial::dhp_define_hierarchical_progression, "DHP"},
-	{MarkerSpecial::exp_expand_reference_components,     "EXP"},
-	{MarkerSpecial::com_comment,                         "COM"}
-};
-
-// Class for encapsulating all the magic numbers/bitmasks involved in
-// decoding the marker values.
-struct Marker {
-	// Note: Technically markers are two bytes, but the first
-	// byte is always 0xFF and doesn't contain any interesting
-	// information, so leave it out of our representiation.
-	unsigned char marker;
-
-	bool is_sof() const {
-		// SOF Markers are 0b1100xxxx, except for some special
-		// markers stuffed in the middle of the SOF range.
-		return (
-			(marker & 0xF0) == 0xC0 &&
-			marker != (unsigned char)(MarkerSpecial::dht_define_huff_table) &&
-			marker != (unsigned char)(MarkerSpecial::jpg_reserved) &&
-			marker != (unsigned char)(MarkerSpecial::dac_define_arith_coding)
-		);
-	}
-
-	StartOfFrameInfo parse_sof() const {
-		// SOF markers are basically bitfields, so
-		// delegate parsing to another struct...
-		return StartOfFrameInfo(marker);
-	}
-
-	static Marker sof(const StartOfFrameInfo& info) {
-		return Marker(info.marker_value());
-	}
-
-	bool is_rstn() const {
-		// RSTn Markers are 0b11010xxx
-		return (marker & 0xF8) == 0xD0;
-	}
-
-	// Get the 'n' of RSTn.
-	unsigned char parse_rstn() const {
-		return marker & 0x07;
-	}
-
-	static Marker rstn(uint8_t n) {
-		return Marker(0xD0 | (0x07 & n));
-	}
-
-	bool is_appn() const {
-		// APPn Markers are 0b1110xxxx
-		return (marker & 0xF0) == 0xE0;
-	}
-
-	// Get the 'n' of APPn.
-	unsigned char parse_appn() const {
-		return marker & 0x0F;
-	}
-
-	static Marker appn(uint8_t n) {
-		return Marker(0xE0 | (0x0F & n));
-	}
-
-	// Markers reserved specifically for JPG extensions.
-	bool is_jpgn() const {
-		return marker >= 0xF0 && marker <= 0xFD;
-	}
-
-	// Get the 'n' of JPGn.
-	unsigned char parse_jpgn() const {
-		return marker & 0x0F;
-	}
-
-	// RES markers should be ignored.
-	bool is_res() const {
-		return marker >= 0x02 && marker <= 0xBF;
-	}
-
-	bool is_special() const {
-		return !(
-			is_sof() ||
-			is_rstn() ||
-			is_appn() ||
-			is_jpgn() ||
-			is_res()
-		);
-	}
-
-	MarkerSpecial parse_special() const {
-		return MarkerSpecial { marker };
-	}
-
-	bool is_soi() const {
-		return MarkerSpecial(marker) == MarkerSpecial::soi_start_of_img;
-	}
-
-	bool is_eoi() const {
-		return MarkerSpecial(marker) == MarkerSpecial::eoi_end_of_img;
-	}
-
-	// Test if a marker is a valid value. The standard specifically marks
-	// two values as "invalid". They are used to encode 0xFF in the entropy
-	// coded segments.
-	bool is_valid() const {
-		return marker != 0x00 && marker != 0xFF;
-	}
-
-	// If this is true, then this marker does not precede a
-	// marker segment.
-	bool is_standalone() const {
-		if (is_rstn()) return true;
-
-		switch (marker) {
-			case (unsigned char)(MarkerSpecial::soi_start_of_img):
-			case (unsigned char)(MarkerSpecial::eoi_end_of_img):
-			case (unsigned char)(MarkerSpecial::tem_temporary_use):
-				return true;
-			default:
-				return false;
-		}
-	}
-
-	operator int() const { return marker; };
-
-	explicit operator std::string() const {
-		if (!is_valid()) {
-			return std::format("INVALID_MARKER 0x{:X}", int(marker));
-		}
-
-		if (is_sof()) {
-			return std::string(parse_sof());
-		} else if (is_rstn()) {
-			return std::format("RST{}*", int(parse_rstn()));
-		} else if (is_appn()) {
-			return std::format("APP{}", int(parse_appn()));
-		} else if (is_jpgn()) {
-			return std::format("JPG{}", int(parse_jpgn()));
-		} else if (is_res()) {
-			return std::format("RESERVED 0x{:X}", int(marker));
-		} else {
-			return symbol_from_special_marker[parse_special()];
-		}
-	}
-};
-
+// Converts a byte vector to a string, inserting a space every 4 bytes:
+//
+// 01020304 05060708 090A0B0C...
 const std::string hexchars = "0123456789ABCDEF";
 std::string string_from_byte_vec(const std::vector<uint8_t>& v) {
 	std::string s;
@@ -304,6 +67,293 @@ std::string string_from_byte_vec(const std::vector<uint8_t>& v) {
 	return std::move(s);
 }
 
+export namespace jpeg {
+// The standard defines four modes of operation. For now, we only support
+// the baseline procedure, but doesn't hurt to recognize the others.
+enum class OperationMode : uint8_t {
+	baseline_seq = 0,
+	extended_seq = 1,
+	progressive =  2,
+	lossless =     3 // always sequential
+};
+
+const std::map<OperationMode, std::string> str_from_operation_mode {
+	{OperationMode::baseline_seq, "BASELINE_SEQUENTIAL"},
+	{OperationMode::extended_seq, "EXTENDED_SEQUENTIAL"},
+	{OperationMode::progressive,  "PROGRESSIVE"},
+	{OperationMode::lossless,     "LOSSLESS"}
+};
+
+enum class CodingType : uint8_t {
+	huffman =    0,
+	arithmetic = 1
+};
+
+const std::map<CodingType, std::string> str_from_coding_type {
+	{CodingType::huffman,    "HUFFMAN"},
+	{CodingType::arithmetic, "ARITHMETIC"}
+};
+
+// Bitfield marker bases and masks.
+const uint8_t sof_base   = 0xC0;
+const uint8_t sof_mask   = 0xF0;
+const uint8_t rst_base   = 0xD0;
+const uint8_t rst_mask   = 0xF8;
+const uint8_t app_base   = 0xE0;
+const uint8_t app_mask   = 0xF0;
+
+// Range marker bases and masks.
+const uint8_t jpgn_start = 0xF0;
+const uint8_t jpgn_end   = 0xFD;
+const uint8_t jpgn_mask  = 0x0F;
+const uint8_t res_start  = 0x02;
+const uint8_t res_end    = 0xBF;
+
+// Invalid markers are not actually markers, so they aren't defined under
+// MarkerSpecial. Just give them their own constants.
+const uint8_t mark_invalid_high = 0xFF;
+const uint8_t mark_invalid_low  = 0x00;
+
+struct FrameType {
+	OperationMode mode = OperationMode::baseline_seq;
+	CodingType coding = CodingType::huffman;
+	bool is_differential = false;
+
+	FrameType() = default;
+	FrameType(OperationMode sof_t, CodingType ct, bool diff) :
+		mode{sof_t}, coding{ct}, is_differential{diff} {}
+
+	// Constructs from marker char. In this case, the enum definitions
+	// we're using line up with the values given in the standard,
+	// so just use bit magic to get them.
+	FrameType(uint8_t m) :
+		mode{OperationMode(m & 0x03)},
+		coding{CodingType((m & 0x08) >> 3)},
+		is_differential{bool(m & 0x04)} {}
+
+	// Checks if this FrameType describes the baseline process.
+	// Only the mode is checked, since the baseline mode can *only* be
+	// non-differential and Huffman coded.
+	bool is_baseline() const {
+		return mode == OperationMode::baseline_seq;
+	}
+
+	// Reconstructs the 8-bit marker value from the separate fields.
+	uint8_t marker_value() const {
+		return (
+			sof_base |
+			((uint8_t) mode) |
+			(((uint8_t) coding) << 3) |
+			(((uint8_t) is_differential) << 2)
+		);
+	}
+
+	explicit operator std::string() const {
+		return std::format(
+			"SOF {} | {}DIFFERENTIAL | {}-CODED",
+			str_from_operation_mode.at(mode),
+			(is_differential) ? "" : "NON-",
+			str_from_coding_type.at(coding)
+		);
+	}
+};
+
+// Special marker code assignments. "Special" markers do not
+// contain any additional information in the marker code, so just hardcode
+// their values.
+enum class MarkerSpecial : uint8_t {
+	// TEM is used only in arithmetic coding as far as I know
+	tem_temporary_use =                   0x01,
+
+	// Weird markers - These are jammed into the range occupied mostly by
+	// the various SOF markers.
+	dht_define_huff_table =               0xC4,
+	jpg_reserved =                        0xC8,
+	dac_define_arith_coding =             0xCC,
+
+	// Other markers
+	soi_start_of_img =                    0xD8,
+	eoi_end_of_img =                      0xD9,
+	sos_start_of_scan =                   0xDA,
+	dqt_define_quant_table =              0xDB,
+	dnl_define_num_lines =                0xDC,
+	dri_define_rst_interval =             0xDD,
+	dhp_define_hierarchical_progression = 0xDE,
+	exp_expand_reference_components =     0xDF,
+	com_comment =                         0xFE
+};
+
+const std::map<MarkerSpecial, std::string> symbol_from_special_marker {
+	{MarkerSpecial::tem_temporary_use,                   "TEM*"},
+	{MarkerSpecial::dht_define_huff_table,               "DHT"},
+	{MarkerSpecial::jpg_reserved,                        "JPG"},
+	{MarkerSpecial::dac_define_arith_coding,             "DAC"},
+	{MarkerSpecial::soi_start_of_img,                    "SOI*"},
+	{MarkerSpecial::eoi_end_of_img,                      "EOI*"},
+	{MarkerSpecial::sos_start_of_scan,                   "SOS"},
+	{MarkerSpecial::dqt_define_quant_table,              "DQT"},
+	{MarkerSpecial::dnl_define_num_lines,                "DNL"},
+	{MarkerSpecial::dri_define_rst_interval,             "DRI"},
+	{MarkerSpecial::dhp_define_hierarchical_progression, "DHP"},
+	{MarkerSpecial::exp_expand_reference_components,     "EXP"},
+	{MarkerSpecial::com_comment,                         "COM"}
+};
+
+// Class for encapsulating all the magic numbers/bitmasks involved in
+// decoding the marker values.
+struct Marker {
+	// Note: Technically markers are two bytes, but the first
+	// byte is always 0xFF and doesn't contain any interesting
+	// information, so leave it out of our representiation.
+	uint8_t marker;
+
+	bool is_sof() const {
+		// SOF Markers are 0b1100xxxx, except for some special
+		// markers stuffed in the middle of the SOF range.
+		return (
+			(marker & sof_mask) == sof_base &&
+			marker != (uint8_t)(MarkerSpecial::dht_define_huff_table) &&
+			marker != (uint8_t)(MarkerSpecial::jpg_reserved) &&
+			marker != (uint8_t)(MarkerSpecial::dac_define_arith_coding)
+		);
+	}
+
+	// Extracts frame type information from an SOF marker.
+	FrameType parse_sof() const {
+		// SOF markers are basically bitfields, so
+		// delegate parsing to another struct...
+		return FrameType(marker);
+	}
+
+	// Constructs an SOF marker.
+	static Marker sof(const FrameType& type) {
+		return Marker(type.marker_value());
+	}
+
+	bool is_rstn() const {
+		return (marker & rst_mask) == rst_base;
+	}
+
+	// Gets the 'n' of RSTn.
+	uint8_t parse_rstn() const {
+		return marker & (~rst_mask);
+	}
+
+	// Constructs an RSTn marker.
+	static Marker rstn(uint8_t n) {
+		n &= ~rst_mask;
+		return Marker(rst_base | n);
+	}
+
+	bool is_appn() const {
+		return (marker & app_mask) == app_base;
+	}
+
+	// Gets the 'n' of APPn.
+	uint8_t parse_appn() const {
+		return marker & (~app_mask);
+	}
+
+	// Constructs an APPn marker.
+	static Marker appn(uint8_t n) {
+		n &= ~app_mask;
+		return Marker(app_base | n);
+	}
+
+	// Checks if this marker is JPGn. These markers are specifically
+	// reserved for JPEG extensions and are very uncommon. They will
+	// be ignored by this implementation.
+	bool is_jpgn() const {
+		return marker >= jpgn_start && marker <= jpgn_end;
+	}
+
+	// Gets the 'n' of JPGn.
+	uint8_t parse_jpgn() const {
+		return marker & jpgn_mask;
+	}
+
+	// Checks if this marker is RES, a reserved value. These markers should
+	// be ignored.
+	bool is_res() const {
+		return marker >= res_start && marker <= res_end;
+	}
+
+	// Checks if this marker is "special", meaning it does not fit
+	// into any of the other families and does not include any additional
+	// information.
+	bool is_special() const {
+		return !(
+			is_sof() ||
+			is_rstn() ||
+			is_appn() ||
+			is_jpgn() ||
+			is_res()
+		);
+	}
+
+	// Converts this marker to one of the "special" constants.
+	MarkerSpecial parse_special() const {
+		return MarkerSpecial { marker };
+	}
+
+	bool is_soi() const {
+		return MarkerSpecial(marker) == MarkerSpecial::soi_start_of_img;
+	}
+
+	bool is_eoi() const {
+		return MarkerSpecial(marker) == MarkerSpecial::eoi_end_of_img;
+	}
+
+	// Tests if a marker is a valid value. The standard specifically marks
+	// two values as "invalid". They are used to encode 0xFF in the entropy
+	// coded segments.
+	bool is_valid() const {
+		return (
+			marker != mark_invalid_low &&
+			marker != mark_invalid_high
+		);
+	}
+
+	// Checks if a marker is "standalone". If true, then this marker does
+	// not precede a marker segment.
+	bool is_standalone() const {
+		if (is_rstn()) return true;
+
+		switch (marker) {
+			case (uint8_t)(MarkerSpecial::soi_start_of_img):
+			case (uint8_t)(MarkerSpecial::eoi_end_of_img):
+			case (uint8_t)(MarkerSpecial::tem_temporary_use):
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	operator int() const { return marker; };
+
+	explicit operator std::string() const {
+		if (!is_valid()) {
+			return std::format("INVALID_MARKER 0x{:X}", marker);
+		}
+
+		if (is_sof()) {
+			return std::string(parse_sof());
+		} else if (is_rstn()) {
+			return std::format("RST{}*", int(parse_rstn()));
+		} else if (is_appn()) {
+			return std::format("APP{}", parse_appn());
+		} else if (is_jpgn()) {
+			return std::format("JPG{}", parse_jpgn());
+		} else if (is_res()) {
+			return std::format("RESERVED 0x{:X}", marker);
+		} else {
+			return symbol_from_special_marker.at(parse_special());
+		}
+	}
+};
+
+const unsigned int str_float_precision = 5;
+
 template<typename T>
 concept arithmetic = std::integral<T> or std::floating_point<T>;
 
@@ -315,7 +365,9 @@ class Matrix {
 
 private:
 	// FIXME big problem here - std::array isn't movable so all of the
-	// arithmetic operations are copying entire matrices
+	// arithmetic operations are copying entire matrices... 
+	// UPDATE: In my measurements this doesn't actually seem to affect
+	// performance much. TODO compare using std::vector
 	std::array<T, W*H> data {0};
 
 	constexpr void bounds_check(size_t x, size_t y) const {
@@ -350,7 +402,6 @@ public:
 	// for external access of dimensions
 	static const size_t width = W;
 	static const size_t height = H;
-	static const unsigned int str_float_precision = 5;
 
 	Matrix() = default;
 	Matrix(const std::initializer_list<T>& ilist) {
@@ -438,6 +489,8 @@ public:
 		return std::move(result);
 	}
 
+	// Creates a clamped copy of this matrix, forcing every value `v`
+	// to satisfy (low <= v <= high).
 	Matrix<T, W, H> clamp(T low, T high) const {
 		Matrix<T, W, H> result;
 
@@ -451,6 +504,7 @@ public:
 		return std::move(result);
 	}
 
+	// Multiplies every value in this matrix by a single number.
 	template<arithmetic RESULT_T=T, arithmetic OTHER_T>
 	Matrix<RESULT_T, W, H> scalar_mul(OTHER_T m) const {
 		Matrix<RESULT_T, W, H> result;
@@ -462,6 +516,7 @@ public:
 		return std::move(result);
 	}
 
+	// Determines the maximum value in this matrix.
 	T max() const {
 		T m = 0;
 		for (size_t i = 0; i < data.size(); i++) {
@@ -471,11 +526,14 @@ public:
 		return m;
 	}
 
+	// Calculates how width each value in this matrix should be when
+	// converting to string. Helps keep all the values lined up nicely.
 	template<std::floating_point ST>
 	size_t calc_field_width(this const Matrix<ST, W, H>& self) {
 		return std::format("{:.{}f}", self.max(), str_float_precision).size() + 2;
 	}
 
+	// Same as above, specialized for integers.
 	template<std::integral ST>
 	size_t calc_field_width(this const Matrix<ST, W, H>& self) {
 		T m = self.max();
@@ -484,11 +542,13 @@ public:
 		return (size_t)std::log10(std::abs(self.max())) + 1;
 	}
 
+	// Formats a single matrix value (for float-valued matrices).
 	template<std::floating_point ST>
 	static std::string fmt_item(ST val, size_t field_width) {
 		return std::format("{:{}.{}f}", val, field_width, str_float_precision);
 	}
 
+	// Same as above, specialized for integers.
 	template<std::integral ST>
 	static std::string fmt_item(ST val, size_t field_width) {
 		return std::format("{:{}d}", val, field_width);
@@ -514,6 +574,8 @@ public:
 	}
 };
 
+// Calculates the DCT (discrete cosine transform) matrix. Used in the encoding
+// and decoding processes.
 auto calc_dct_mat() {
 	Matrix<double, 8, 8> mat;
 
@@ -533,10 +595,12 @@ auto calc_dct_mat() {
 const Matrix<double, 8, 8> dct_mat = calc_dct_mat();
 const Matrix<double, 8, 8> dct_mat_t = dct_mat.transpose();
 
-// For a standard JPEG impl, we have no idea what application segments
-// contain, so leave it as unparsed data.
+// APPn marker segment.
 struct AppSegment {
 	unsigned int n; // APPn
+
+	// For a standard JPEG impl, we have no idea what application segments
+	// contain, so leave it as unparsed data.
 	std::vector<uint8_t> data;
 
 	explicit operator std::string() const {
@@ -553,6 +617,9 @@ struct QuantizationTable {
 	QuantizationTable(const Matrix<uint16_t, 8, 8>& mat) : data{mat}, set{true} {}
 	QuantizationTable(Matrix<uint16_t, 8, 8>&& mat) : data{std::move(mat)}, set{true} {}
 
+	// Determines the precision value for this table. 0 indicates an 8-bit
+	// table, and 1 indicates a 16-bit table. This value is only used when
+	// reading/writing the table from/to a JPEG file.
 	uint8_t precision() const {
 		if (data.max() <= 255) {
 			return 0;
@@ -576,18 +643,21 @@ const std::map<TableClass, std::string> str_from_table_class = {
 	{TableClass::ac, "AC"}
 };
 
+// Struct representing a single Huffman code.
 struct HuffmanCode {
 	uint16_t code = 0; // huffman code
 	uint8_t bits = 0;  // number of bits for this code
 	uint8_t value = 0; // value of the code
 
-	// Show the code as a binary string.
+	// Format the code as a binary string. This differs from the typical
+	// formatting; while `code` is 16 bits, only the first `bits` bits
+	// are important, so only those are included in the returned string.
 	std::string code_str() const {
 		if (bits == 0) return "BITS=0";
 
 		auto out = std::string(bits, '\0');
 		int c = code;
-		for (int b = bits - 1; b >= 0; b--) {
+		for (int b = bits - 1; b >= 0; --b) {
 			out[b] = bool(c & 0x01) ? '1' : '0';
 			c = c >> 1;
 		}
@@ -600,7 +670,14 @@ struct HuffmanCode {
 	}
 };
 
+// Default value for HuffmanTable::lookup_value
+const HuffmanCode huffman_zero { 0, 0, 0 };
+
+// Struct representing a Huffman code table.
 struct HuffmanTable {
+	// These tables are included in a fixed-size array. To distinguish
+	// between tables that have been initialized and those that have not,
+	// we use this value.
 	bool set = false;
 
 	// This vector contains the three tables HUFFSIZE, HUFFCODE and HUFFVAL,
@@ -612,7 +689,7 @@ struct HuffmanTable {
 	std::array<uint8_t, 16> size_amts {0};
 
 	// Value lookup table. A little big, but faster.
-	std::array<HuffmanCode*, 255> value_ptrs;
+	std::array<const HuffmanCode*, 255> value_ptrs { &huffman_zero };
 
 	HuffmanTable() = default;
 	HuffmanTable(const std::initializer_list<HuffmanCode> ilist) {
@@ -621,8 +698,8 @@ struct HuffmanTable {
 		set = true;
 	}
 
-	// Generate the table HUFFCODE, as specified in figure C.2
-	// Requires HUFFSIZE to be populated.
+	// Generates the table HUFFCODE, and populates additional lookup
+	// tables. Requires HUFFSIZE and HUFFVAL to be populated.
 	void populate_codes() {
 		if (codes.empty()) {
 			msg::warn("HuffmanTable: Attempt to populate_codes() on empty table");
@@ -657,6 +734,13 @@ struct HuffmanTable {
 		}
 	}
 
+	// Looks up the Huffman code for a given value. If this value isn't
+	// present in the table, then a reference to a "zero" Huffman code is
+	// returned. This may be checked by testing if `bits` is 0:
+	//
+	// if (table.lookup_value(val).bits == 0) {
+	//      // handle missing value, valid huffman codes never have 0 bits
+	// }
 	const HuffmanCode& lookup_value(uint8_t value) const {
 		if (!set) {
 			throw std::runtime_error("Cannot lookup value in unset table");
@@ -665,6 +749,9 @@ struct HuffmanTable {
 		return *value_ptrs[value];
 	}
 
+	// Looks up the value of a Huffman code. If the code could not be
+	// found, returns -1. If the code is found, its value will be an 8-bit
+	// unsigned integer fitted in the lower half of the returned int16_t.
 	int16_t lookup_code(uint16_t lookup_code, uint8_t bits) const {
 		if (!set) {
 			throw std::runtime_error("Cannot lookup code in unset table");
@@ -710,7 +797,7 @@ struct HuffmanTable {
 		}
 	}
 
-	// A bit hacky... but most Jpeg files I've seen in the wild all use
+	// A bit hacky... but most JPEG files I've seen in the wild all use
 	// the tables suggested by the JPEG standard. To save some time, this
 	// function will spit out the codes formatted as an initializer list
 	// that can be used in C++ code.
@@ -732,14 +819,13 @@ struct HuffmanTable {
 	}
 };
 
-struct ArithmeticTable {
-	bool set = false;
-	TableClass _class = TableClass::dc;
-	uint8_t value = 0;
-};
-
+// Information about one component in a scan.
 struct ScanComponentParams {
+	// Sets which component in the frame this scan component refers to.
 	uint8_t component_selector = 0;
+
+	// Sets which DC and AC tables should be selected while decoding this
+	// data.
 	uint8_t dc_entropy_coding_selector = 0;
 	uint8_t ac_entropy_coding_selector = 0;
 
@@ -753,21 +839,38 @@ struct ScanComponentParams {
 	}
 };
 
+// A JPEG scan. A scan is a contiguous region of encoded data that when
+// decoded, will set coefficients in the entire area of one or more components.
+// That is, if a component consists of N blocks, then this scan will specify N
+// blocks. Scans may contain the blocks of more than one component. In this
+// case, the data will be interleaved, with the scan containing the same number
+// of blocks as the sum of the number of blocks contained in each component.
+// 
+// The exact ordering of blocks in the scan is not trivial. See BlockView.
 struct Scan {
+	// The number of components in this scan. If >1, this scan contains
+	// interleaved data.
 	uint8_t num_components = 0;
+
+	// The selection parameters for each component in this scan.
+	// These parameters are stored in the same order the components will
+	// occur in the coded scan data.
 	std::vector<ScanComponentParams> component_params;
 
+	// Values for operation modes other than baseline. Unused.
 	uint8_t start_spectral_sel = 0;
 	uint8_t end_spectral_sel = 63;
 	uint8_t succ_approx_high = 0;
 	uint8_t succ_approx_low = 0;
 
+	// Number of MCUs contained in one restart interval.
 	uint16_t restart_interval = 0;
 
 	// Entropy-coded data as it is encoded in the file, with RST markers
 	// removed in favor of breaking up the intervals into sub-vectors.
 	std::vector<std::vector<uint8_t>> entropy_coded_data;
 
+	// Calculates total number of entropy-coded bytes in this scan.
 	size_t total_bytes_data() const {
 		size_t sum = 0;
 
@@ -804,18 +907,40 @@ struct Scan {
 	}
 };
 
+// Represents a raw AC coefficient code as read from scan data.
 struct AcCoeff {
+	// Zero run length. If >0, then this coefficient is preceded by R
+	// zeros. Max of 15.
 	uint8_t r = 0;
+
+	// Magnitude category.
 	uint8_t s = 0;
+
+	// The value of the coefficient. May be zero, in which case this
+	// value codes r+1 zeros.
 	int16_t value = 0;
 
+	// Checks if this value codes EOB (end of block).
+	// If this value is encountered while decoding, then the rest of the
+	// block will be filled with zeros.
 	bool is_eob() const { return r == 0 && s == 0; }
 };
 
+// Information about one component in a frame.
 struct FrameComponentParams {
+	// The ID of the component. Used in scans to identify which components
+	// each scan contains.
 	uint8_t identifier = 0;
+
+	// Horizontal size of a block chunk to be contained in one MCU.
+	// Also determines size of this component relative to others.
 	uint8_t horizontal_sampling_factor = 0;
+
+	// Vertical size of a block chunk to be contained in one MCU.
+	// Also determines size of this component relative to others.
 	uint8_t vertical_sampling_factor = 0;
+
+	// Sets the quantization table to use for this component.
 	uint8_t qtable_selector = 0;
 
 	explicit operator std::string() const {
@@ -829,17 +954,35 @@ struct FrameComponentParams {
 	}
 };
 
+// A JPEG frame. A frame defines one image, consisting of one or more
+// components (typically YCrCb). The frame structure dictates the size of each
+// component, and a number of other settings, constructing the "destination"
+// that compressed image data will be decoded to. Along with a frame are one
+// or more "scans", which are decoded and written into the decompressed
+// destination data.
 struct Frame {
-	StartOfFrameInfo sof_info;
+	// Global settings for how the frame shall be encoded.
+	FrameType type;
 
+	// Number of bits on one image sample. Should always be 8 for baseline
+	// operation.
 	uint8_t sample_precision = 8;
+
+	// Height (Y) of the image in pixels.
 	uint16_t num_lines = 0;
+
+	// Width (X) of the image in pixels.
 	uint16_t samples_per_line = 0;
+
+	// Number of components in this frame.
 	uint8_t num_components = 0;
 
+	// Parameters for each component in the scan.
 	std::vector<FrameComponentParams> component_params;
 	std::vector<Scan> scans;
 
+	// Determines the maximum horizontal sampling factor across all
+	// components.
 	int h_max() const {
 		int max = 0;
 
@@ -852,6 +995,8 @@ struct Frame {
 		return max;
 	}
 
+	// Determines the maximum vertical sampling factor across all
+	// components.
 	int v_max() const {
 		int max = 0;
 
@@ -864,6 +1009,8 @@ struct Frame {
 		return max;
 	}
 
+	// Determines the length in blocks of one MCU containing data from
+	// every component.
 	int mcu_length() const {
 		int out = 0;
 
@@ -879,7 +1026,7 @@ struct Frame {
 		std::stringstream out;
 		out << std::format(
 			"MARK: {}\nP={} | X={} | Y={}\n",
-			std::string(sof_info),
+			std::string(type),
 			sample_precision,
 			samples_per_line,
 			num_lines
@@ -906,8 +1053,8 @@ struct Frame {
 	}
 };
 
-// All data needed to decode a JPEG image, including tables, entropy-coded
-// data, etc.
+// Encapsulates all data included in a JPEG file, including tables,
+// entropy-coded data, comments and application segments, etc.
 class CompressedJpegData {
 private:
 	// Standard supports up to 4 slots for each type of table.
@@ -916,13 +1063,18 @@ private:
 	bool valid = false;
 	std::string _source_file {""};
 
+	// Destination arrays for each type of table.
 	std::array<QuantizationTable, num_tables> _q_tables;
 	std::array<HuffmanTable, num_tables> _ac_huff_tables;
 	std::array<HuffmanTable, num_tables> _dc_huff_tables;
-	std::array<ArithmeticTable, num_tables> arith_tables;
 
+	// Application segments contained in this JPEG.
 	std::vector<AppSegment> _app_segments;
 	std::vector<std::vector<uint8_t>> _comments;
+
+	// The image frames contained in this JPEG. Typically there will only
+	// be one, as each frame models one image. The baseline coding
+	// process only supports one.
 	std::vector<Frame> _frames;
 public:
 	bool is_valid() {
@@ -993,104 +1145,59 @@ public:
 	}
 };
 
-class RawComponent;
-
 const unsigned int block_size = 8;
 
-/*
- * Helper class for accessing one block of image data.
- */
-class BlockView {
-private:
-	int _mcu_x;
-	int _mcu_y;
 
-	int _block_x;
-	int _block_y;
-
-	int _x_offset;
-	int _y_offset;
-
-	RawComponent* _component;
-
-	static void coord_check(int x, int y);
-	bool coord_advance(
-		int& x,
-		int& y,
-		const int& x_bound,
-		const int& y_bound
-	);
-	void recalc_x_offset();
-	void recalc_y_offset();
-public:
-	BlockView() = delete;
-	BlockView(
-		int mcu_x,
-		int mcu_y,
-		int block_x,
-		int block_y,
-		RawComponent& comp
-	);
-	BlockView(RawComponent& comp) : BlockView(0, 0, 0, 0, comp) {}
-
-	const uint8_t& operator[](int x, int y) const;
-	uint8_t& operator[](int x, int y);
-
-	// Allow read-only access to the underlying component for access
-	// to dimension information.
-	const RawComponent& component() const { return *_component; }
-
-	int mcu_x() { return _mcu_x; }
-	int mcu_y() { return _mcu_y; }
-
-	bool mcu_advance();
-	bool block_advance();
-
-	explicit operator std::string() const {
-		return std::format(
-			"mcux={} mcuy={} blockx={} blocky={} offset=<{}, {}>",
-			_mcu_x, _mcu_y, _block_x, _block_y, _x_offset, _y_offset
-		);
-	}
-};
-
+// Represents an uncompressed image component.
 class RawComponent {
 private:
 	// Width and height of valid component data.
 	int _x_pixels;
 	int _y_pixels;
 
-	// Width and height of backing storage in MCUs (Minimum Coded Units).
+	// Width and height of backing storage in MCU (Minimum Coded Units)
+	// windows.
 	int _x_mcus;
 	int _y_mcus;
 
-	// Width and height of one MCU, in blocks.
+	// Width and height of one MCU window, in blocks. Blocks are always 8x8
+	// pixels.
 	int _mcu_width;
 	int _mcu_height;
 
 	// Maximum bounds on the backing store. This may be a bit
 	// larger than _x_pixels and/or _y_pixels if those values aren't
-	// integer multiples of the MCU size in pixels. This could be
-	// calculated every time from other values, but it's cached here
-	// since we check these bounds on every sample access.
+	// integer multiples of the MCU window size in pixels.
+	// These values are calculated from other parameters and cached since
+	// they are checked on every sample access.
 	int _x_size;
 	int _y_size;
 
+	// Backing image storage. This is a two-dimensional array stored in
+	// row-major order. This storage is allocated once on construction
+	// and never resized.
 	std::vector<uint8_t> _data;
 
+	// Calculates how many MCU windows wide/tall the backing storage should
+	// be.
 	static int calc_n_mcus(int samples, int mcu_len_in_blocks) {
 		auto [q, r] = std::div(samples, block_size*mcu_len_in_blocks);
 		return q + ((r == 0) ? 0 : 1);
 	}
 
+	// Calculates the total width of the backing array.
 	int calc_x_size() const {
 		return _x_mcus * _mcu_width * block_size;
 	}
 
+	// Calculates the total height of the backing array.
 	int calc_y_size() const {
 		return _y_mcus * _mcu_height * block_size;
 	}
 
+	// Calculates the index into the backing store given (x, y)
+	// coordinates. If either coordinate is out of range, throws
+	// std::out_of_range.
 	int data_idx_from_xy(int x, int y) const {
 		if (x >= _x_size) {
 			throw std::out_of_range("RawComponent: x value out of range");
@@ -1112,7 +1219,7 @@ public:
 		int mcu_height_blocks,
 		uint8_t default_value
 	) {
-		// All of the various calculated sizes are cached on
+		// All of the calculated sizes are cached on
 		// construction, since we're going to be using them a LOT.
 		_x_pixels = x_pixels;
 		_y_pixels = y_pixels;
@@ -1152,8 +1259,9 @@ public:
 	// Direct sample access. Access is allowed to go slightly beyond
 	// img_width/img_height, to simplify cases where the img size and
 	// block size are misaligned.
-	const uint8_t& operator[](int x, int y) const { return _data[data_idx_from_xy(x, y)]; }
-	uint8_t& operator[](int x, int y) { return _data[data_idx_from_xy(x, y)]; }
+	decltype(auto) operator[](this auto& self, int x, int y) {
+		return self._data[self.data_idx_from_xy(x, y)];
+	}
 
 	explicit operator std::string() const {
 		return std::format(
@@ -1163,111 +1271,157 @@ public:
 	}
 };
 
-BlockView::BlockView(
-	int mcu_x,
-	int mcu_y,
-	int block_x,
-	int block_y,
-	RawComponent& comp
-) {
-	if (mcu_x >= comp.x_mcus()) {
-		throw std::out_of_range("mcu x value out of range");
+// Helper class for accessing one block of image data according to the scan
+// block ordering rules. Acts as a window into a larger RawComponent object.
+class BlockView {
+private:
+	// MCU coordinates.
+	int _mcu_x;
+	int _mcu_y;
+
+	// Block coordinates.
+	int _block_x;
+	int _block_y;
+
+	// X/Y offsets into the RawComponent this BlockView is viewing.
+	// Determined by the MCU and block coordinates. They are only updated
+	// on block_advance() and mcu_advance().
+	int _x_offset;
+	int _y_offset;
+
+	// The component being viewed.
+	RawComponent* _component;
+
+	static void coord_check(int x, int y) {
+		if (x >= block_size) {
+			throw std::out_of_range("BlockView: x value out of range");
+		}
+
+		if (y >= block_size) {
+			throw std::out_of_range("BlockView: y value out of range");
+		}
 	}
 
-	if (mcu_y >= comp.y_mcus()) {
-		throw std::out_of_range("mcu y value out of range");
+	bool coord_advance(
+		int& x,
+		int& y,
+		const int& x_bound,
+		const int& y_bound
+	) {
+		if (y >= y_bound || (y == y_bound - 1 && x >= x_bound - 1)) {
+			return false;
+		}
+
+		bool recalc_y = false;
+
+		x++;
+
+		if (x >= x_bound) {
+			x = 0;
+			y++;
+		}
+
+		recalc_x_offset();
+		recalc_y_offset();
+
+		return true;
 	}
 
-	if (block_x >= comp.mcu_width()) {
-		throw std::out_of_range("block x value out of range");
+	// Recalculate the X/Y offsets into the RawComponent associated with
+	// this view.
+	void recalc_x_offset() {
+		_x_offset = (_mcu_x * _component->mcu_width() + _block_x) * block_size;
+	}
+	void recalc_y_offset() {
+		_y_offset = (_mcu_y * _component->mcu_height() + _block_y) * block_size;
+	}
+public:
+	BlockView() = delete;
+	BlockView(RawComponent& comp) : BlockView(0, 0, 0, 0, comp) {}
+
+	// Construct a BlockView with starting MCU and block coordinates.
+	BlockView(
+		int mcu_x,
+		int mcu_y,
+		int block_x,
+		int block_y,
+		RawComponent& comp
+	) {
+		if (mcu_x >= comp.x_mcus()) {
+			throw std::out_of_range("mcu x value out of range");
+		}
+
+		if (mcu_y >= comp.y_mcus()) {
+			throw std::out_of_range("mcu y value out of range");
+		}
+
+		if (block_x >= comp.mcu_width()) {
+			throw std::out_of_range("block x value out of range");
+		}
+
+		if (block_y >= comp.mcu_height()) {
+			throw std::out_of_range("block y value out of range");
+		}
+
+		_component = &comp;
+
+		_mcu_x = mcu_x;
+		_mcu_y = mcu_y;
+		_block_x = block_x;
+		_block_y = block_y;
+
+		recalc_x_offset();
+		recalc_y_offset();
 	}
 
-	if (block_y >= comp.mcu_height()) {
-		throw std::out_of_range("block y value out of range");
+	// Accesses the sample at (x, y) of the current block pointed to by
+	// this view, depending on the current block and MCU coordinates.
+	uint8_t& operator[](int x, int y) {
+		coord_check(x, y);
+		return (*_component)[_x_offset + x, _y_offset + y];
 	}
 
-	_component = &comp;
+	// Allow read-only access to the underlying component for access
+	// to dimension information.
+	const RawComponent& component() const { return *_component; }
 
-	_mcu_x = mcu_x;
-	_mcu_y = mcu_y;
-	_block_x = block_x;
-	_block_y = block_y;
+	int mcu_x() { return _mcu_x; }
+	int mcu_y() { return _mcu_y; }
 
-	recalc_x_offset();
-	recalc_y_offset();
-}
+	// Advances this view to the next MCU, resetting the block coordinate
+	// to (0, 0). If we are able to advance, this will return true. Failure
+	// to advance will return false, indicating the view is at the end of
+	// the component's data.
+	bool mcu_advance() {
+		_block_x = 0;
+		_block_y = 0;
 
-void BlockView::recalc_x_offset() {
-	_x_offset = (_mcu_x * _component->mcu_width() + _block_x) * block_size;
-}
-
-void BlockView::recalc_y_offset() {
-	_y_offset = (_mcu_y * _component->mcu_height() + _block_y) * block_size;
-}
-
-void BlockView::coord_check(int x, int y) {
-	if (x >= block_size) {
-		throw std::out_of_range("BlockView: x value out of range");
+		return coord_advance(
+			_mcu_x,
+			_mcu_y,
+			_component->x_mcus(),
+			_component->y_mcus()
+		);
 	}
 
-	if (y >= block_size) {
-		throw std::out_of_range("BlockView: y value out of range");
-	}
-}
-
-const uint8_t& BlockView::operator[](int x, int y) const {
-	coord_check(x, y);
-	return (*_component)[_x_offset + x, _y_offset + y];
-}
-
-uint8_t& BlockView::operator[](int x, int y) {
-	coord_check(x, y);
-	return (*_component)[_x_offset + x, _y_offset + y];
-}
-
-bool BlockView::coord_advance(
-	int& x,
-	int& y,
-	const int& x_bound,
-	const int& y_bound
-) {
-	if (y >= y_bound || (y == y_bound - 1 && x >= x_bound - 1)) {
-		return false;
+	// Advances this window to the next block within the current MCU.
+	// If we are able to advance, this will return true. Failure to advance
+	// will return false, indicating we have run out of blocks in the
+	// current MCU. In this case, mcu_advance() must be called.
+	bool block_advance() {
+		return coord_advance(
+			_block_x,
+			_block_y,
+			_component->mcu_width(),
+			_component->mcu_height()
+		);
 	}
 
-	bool recalc_y = false;
-
-	x++;
-
-	if (x >= x_bound) {
-		x = 0;
-		y++;
+	explicit operator std::string() const {
+		return std::format(
+			"mcux={} mcuy={} blockx={} blocky={} offset=<{}, {}>",
+			_mcu_x, _mcu_y, _block_x, _block_y, _x_offset, _y_offset
+		);
 	}
-
-	recalc_x_offset();
-	recalc_y_offset();
-
-	return true;
-}
-
-bool BlockView::mcu_advance() {
-	_block_x = 0;
-	_block_y = 0;
-
-	return coord_advance(
-		_mcu_x,
-		_mcu_y,
-		_component->x_mcus(),
-		_component->y_mcus()
-	);
-}
-
-bool BlockView::block_advance() {
-	return coord_advance(
-		_block_x,
-		_block_y,
-		_component->mcu_width(),
-		_component->mcu_height()
-	);
-}
+};
 }
