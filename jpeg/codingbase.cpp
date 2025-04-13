@@ -6,6 +6,7 @@ import msg;
 import :data;
 
 namespace jpeg {
+// Concept describing a coding policy.
 template<typename T, typename ScanView>
 concept is_coding_policy = requires(
 	const QuantizationTable& q_tbl,
@@ -14,16 +15,24 @@ concept is_coding_policy = requires(
 	ScanView& scan_view,
 	BlockView& block_view
 ) {
+	// En/decodes a block using the provided tables.
+	// Encode processes will read from block_view and write to scan_view,
+	// decode processes will read from scan_view and write to block_view.
 	T::code_block(q_tbl, dc_tbl, ac_tbl, scan_view, block_view);
+
+	// The name for the phase, to be used in debug messages and exceptions.
+	// Should be all caps, something like "ENCODE" or "DECODE".
 	{ T::phase_name } -> std::convertible_to<std::string>;
+
+	// Flushes the scan view. Only used in case of encode processes.
 	T::flush(scan_view);
 };
 
-// Base class for a container of DC predictors.
+// Base class for a container of DC predictors. DC coefficients are coded
+// differentially; to facilitate this, a DcPredictor keeps track of the last
+// coded DC coefficient in each component.
 class DcPredictor {
 private:
-	// DC predictors stored in XXXScanView classes, since that's what decides
-	// when to reset them.
 	std::vector<int16_t> dc_preds;
 	size_t cur_dc_pred;
 
@@ -43,13 +52,15 @@ public:
 		}
 	}
 
-	// Decoder doesn't know what component it's writing to, so
+	// En/decoder doesn't know what component it's writing to, so
 	// need to select it from outside. FIXME may be able to eliminate this
 	void select_component(size_t c) {
 		cur_dc_pred = c;
 	}
 };
 
+// Helper class consisting of a collection of BlockViews into a collection
+// of components.
 class BlockViewBundle {
 private:
 	std::vector<BlockView> block_views;
@@ -68,6 +79,13 @@ public:
 		return block_views.size();
 	}
 
+	// Advances every blockview in this bundle at once. Returns true if at
+	// least one view could advance, false if none of them could.
+	//
+	// If some views advanced but others did not, this indicates that some
+	// views reached the end of their components too early. This most
+	// likely indicates a broken JPEG, but it's a tolerable failure, so
+	// just warn about it.
 	bool mcu_advance() {
 		int advance_cnt = 0;
 		int noadvance_cnt = 0;
@@ -84,7 +102,6 @@ public:
 			msg::warn("BlockViewBundle::mcu_advance: mixed result!");
 		}
 
-		// return success if at least one block view could advance
 		return advance_cnt != 0;
 	}
 };
@@ -95,7 +112,7 @@ template<typename CodingPolicy, typename ScanView>
 requires is_coding_policy<CodingPolicy, ScanView>
 class CodingBase {
 protected:
-	// en/decode a scan. ScanType is templated to allow for
+	// en/decodes a scan. ScanType is templated to allow for
 	// const/non-const.
 	template<typename ScanType>
 	static void code_scan(
@@ -133,6 +150,8 @@ protected:
 		CodingPolicy::flush(scan_view);
 	}
 
+	// en/decodes an MCU. Calls CodingPolicy::code_block once per every
+	// block in the MCU windows of each component.
 	static void code_mcu(
 		const CompressedJpegData& data,
 		ScanView& scan_view,
@@ -149,28 +168,50 @@ protected:
 			scan_view.select_component(comp);
 
 			do {
-				try {
-					CodingPolicy::code_block(
-						data.q_tables()[qsel],
-						data.huff_tables(TableClass::dc)[dcsel],
-						data.huff_tables(TableClass::ac)[acsel],
-						scan_view,
-						block
-					);
-					//throw std::runtime_error("stop");
-				} catch (const std::exception& ex) {
-					msg::error(
-						"{}: failed to code block: {}",
-						CodingPolicy::phase_name, ex.what()
-					);
-					msg::error(
-						"{}: ...at block_view{}: {}",
-						CodingPolicy::phase_name, comp, std::string(block)
-					);
-
-					throw ex;
-				}
+				code_block_with_diagnostic(
+					data.q_tables()[qsel],
+					data.huff_tables(TableClass::dc)[dcsel],
+					data.huff_tables(TableClass::ac)[acsel],
+					scan_view,
+					block,
+					comp
+				);
 			} while (block.block_advance());
+		}
+	}
+
+	// en/decodes a block, but prints some debug information on failure
+	// before propagating the exception
+	static void code_block_with_diagnostic(
+		const QuantizationTable& q_tbl,
+		const HuffmanTable& ac_tbl,
+		const HuffmanTable& dc_tbl,
+		ScanView& scan_view,
+		BlockView& block_view,
+		unsigned int component
+	) {
+
+		try {
+			CodingPolicy::code_block(
+				q_tbl,
+				ac_tbl,
+				dc_tbl,
+				scan_view,
+				block_view
+			);
+		} catch (const std::exception& ex) {
+			msg::error(
+				"{}: failed to code block: {}",
+				CodingPolicy::phase_name, ex.what()
+			);
+			msg::error(
+				"{}: ...at block_views[{}]: {}",
+				CodingPolicy::phase_name,
+				component,
+				std::string(block_view)
+			);
+
+			throw;
 		}
 	}
 };
