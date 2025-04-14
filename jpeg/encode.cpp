@@ -14,32 +14,47 @@ using std::int16_t;
 
 export namespace jpeg {
 // Helper class that keeps track of all indices needed to entropy-code
-// jpeg data.
+// JPEG data. Data is emitted as a bitstream of variable width codes. At the
+// end of the encoding process, `flush()` MUST be called.
 class ScanEncodeView : public DcPredictor {
 private:
+	// The scan we are encoding to.
 	Scan* _scan;
-	uint8_t n_bits = 0;
-	uint8_t cur_byte = 0xFF; // bytes are padded with 1 bits
-	bool flushed = false;
 
+	// A byte functioning as a buffer for the bitstream.
+	// At the end of the encoding process, any "empty" bits in the last
+	// byte are filled with 1s. Therefore, always initialize the buffer to
+	// all 1s.
+	uint8_t cur_byte = 0xFF;
+
+	// Number of bits written to `cur_byte`.
+	uint8_t n_bits = 0;
+
+	// Writes `cur_byte` in the current restart interval and resets it.
 	void put_byte() {
 		auto& interval = _scan->entropy_coded_data.back();
 
 		interval.push_back(cur_byte);
+
+		// To avoid false markers getting generated in the output data,
+		// stuff a 0 byte after every marker indicator.
 		if (cur_byte == 0xFF) interval.push_back(0x00);
 
 		cur_byte = 0xFF;
 		n_bits = 0;
 	}
 
+	// Writes a bit (LSB of b) to the bitstream.
 	void put_bit(uint8_t b) {
-		if (n_bits == 8) put_byte();
 		uint8_t mask = 0x1 << (7 - n_bits);
 		cur_byte &= ~mask; // clear bit
 		cur_byte |= b << (7 - n_bits);
 		n_bits++;
+
+		if (n_bits == 8) put_byte();
 	}
 
+	// Writes the N lowest bits of V to the bitstream.
 	void put_n_bits(uint16_t v, uint8_t n) {
 		if (n == 0) return;
 		if (n > 16) throw std::out_of_range("put_n_bits: n > 16");
@@ -51,6 +66,7 @@ private:
 		}
 	}
 
+	// Calculates the magnitude category of a coefficient value V.
 	static uint8_t magnitude_category(int16_t v) {
 		if (v == 0) return 0;
 
@@ -72,11 +88,15 @@ public:
 
 	const Scan& scan() const { return *_scan; }
 
+	// Finishes encoding the current RST interval in the scan, and advances
+	// to a new one.
 	void next_rst() {
 		_scan->entropy_coded_data.emplace(_scan->entropy_coded_data.end());
+		flush();
 		dc_reset();
 	}
 
+	// Encodes a DC DCT coefficient to the scan, using the given table.
 	void encode_dc_coeff(const HuffmanTable& table, int16_t coeff) {
 		int16_t& pred = dc_pred();
 		int16_t diff = coeff - pred;
@@ -93,6 +113,8 @@ public:
 		}
 	}
 
+	// Encodes an AC coefficient symbol (consists of a run of zeros
+	// followed by a non-zero AC DCT coefficient).
 	void encode_ac_coeff(const HuffmanTable& table, uint8_t run_length, int16_t coeff) {
 		uint8_t s = magnitude_category(coeff);
 		uint8_t rs = (run_length << 4) | s;
@@ -107,31 +129,32 @@ public:
 		}
 	}
 
+	// Encodes an EOB (end of block) symbol.
 	void encode_ac_eob(const HuffmanTable& table) {
 		encode_ac_coeff(table, 0, 0);
 	}
 
-	// Must be called at end of encode process to ensure all bits are
-	// written.
+	// Flushes any unwritten bits to the scan. Must be called manually after
+	// the encode procedure is complete.
 	void flush() {
-		if (flushed) throw std::runtime_error("ScanEncodeView: cannot use flush() twice");
 		if (n_bits > 0) put_byte();
-		flushed = true;
 	}
 };
 
+// Implementation of the is_coding_policy concept for the normal encoding process.
 class EncodePolicy {
 public:
 	static inline const std::string phase_name = "ENCODE";
 
+	// Codes an arbitrarily long run of zeros to the scan, followed by a
+	// non-zero coefficient value.
 	static void code_run(
 		const HuffmanTable& ac_tbl,
 		ScanEncodeView& scan_view,
 		uint8_t run_length,
 		int16_t coeff
 	) {
-		// If we're not at the end of a block, then runs must be
-		// encoded in chunks of 16.
+		// Max number of zeros one symbol can code is 16.
 		while (run_length >= 16) {
 			scan_view.encode_ac_coeff(ac_tbl, 15, 0);
 			run_length -= 16;
@@ -190,10 +213,18 @@ public:
 	}
 };
 
+// Class encapsulating the JPEG encoding algorithm. This encoder supports only
+// baseline huffman coding, which is by far the most common operation mode in
+// use on the internet today.
 class JpegEncoder : CodingBase<EncodePolicy, ScanEncodeView> {
 private:
+	// The quality setting from 0-100 with which this encoder will compress
+	// images. Lower values result in smaller file size, but worse visual
+	// quality.
 	unsigned int quality = 50;
 
+	// Adds luma component parameters to a frame and associated scan.
+	// The component ID will always be 0.
 	static void add_luma_params(Frame& frame, Scan& scan, uint8_t subsamp) {
 		FrameComponentParams frame_params;
 		frame_params.identifier = 0;
@@ -210,6 +241,7 @@ private:
 		scan.component_params.push_back(scan_params);
 	}
 
+	// Adds chroma component parameters to a frame and associated scan.
 	static void add_chroma_params(Frame& frame, Scan& scan, uint8_t id) {
 		FrameComponentParams frame_params;
 		frame_params.identifier = id;
@@ -227,7 +259,14 @@ private:
 	}
 
 public:
+	// Compress the data contained in a raw YCrCb image. This will emit
+	// one frame, consisting of one scan with all components interleaved.
 	CompressedJpegData encode(std::vector<RawComponent>& raws) const {
+		// Only YCrCb is supported, so reject anything that doesn't
+		// have 3 components.
+		if (raws.size() != 3) {
+			throw std::invalid_argument("encode: raws.size() != 3");
+		}
 
 		CompressedJpegData j;
 
@@ -239,36 +278,40 @@ public:
 		uint8_t subsamp = raws[0].x_pixels() / raws[1].x_pixels();
 		msg::debug("ENCODE: Encoding image with quality {}, subsamp {}", quality, subsamp);
 
-		// Init tables.
+		// Init quantization tables.
 		j.q_tables()[0] = generate_qtable(qtable_base_luma, quality);
 		msg::debug("ENCODE: luma qtable\n{}", std::string(j.q_tables()[0]));
 
 		j.q_tables()[1] = generate_qtable(qtable_base_chroma, quality);
 		msg::debug("ENCODE: chroma qtable\n{}", std::string(j.q_tables()[1]));
 
+		// Copy pre-calculated huffman tables.
 		j.huff_tables(TableClass::dc)[0] = hufftable_dc0;
 		j.huff_tables(TableClass::ac)[0] = hufftable_ac0;
 		j.huff_tables(TableClass::dc)[1] = hufftable_dc1;
 		j.huff_tables(TableClass::ac)[1] = hufftable_ac1;
 
+		// Set up frame
 		j.frames().emplace(j.frames().end());
 		Frame& frame = j.frames()[0];
-
 		frame.num_lines = raws[0].y_pixels();
 		frame.samples_per_line = raws[0].x_pixels();
 		frame.sample_precision = 8;
 		frame.num_components = raws.size();
 
+		// Set up scan
 		frame.scans.emplace(frame.scans.end());
 		Scan& scan = frame.scans[0];
-
 		scan.num_components = raws.size();
 		scan.restart_interval = 0;
 
+		// Configure table selectors and sampling factors for each
+		// component
 		add_luma_params(frame, scan, subsamp);
 		add_chroma_params(frame, scan, 1);
 		add_chroma_params(frame, scan, 2);
 
+		// Encode
 		code_scan(j, scan, raws);
 
 		j.set_valid();
