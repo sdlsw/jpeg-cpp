@@ -16,17 +16,18 @@ export namespace jpeg {
 // entropy-coded data segments for decoding.
 class ScanDecodeView : public DcPredictor {
 private:
-	const Scan* _scan;
+	const Scan* _scan;         // The scan we are decoding.
 	unsigned int rst_idx = 0;  // Current interval in scan.
 	unsigned int byte_idx = 0; // Current byte in current RST interval.
 	uint8_t bit_idx = 0;       // Current bit in current byte.
+	uint8_t cur_byte = 0;      // Current byte being decoded.
 
-	uint8_t cur_byte = 0; // Current byte.
-
+	// Checks if all data in the scan has been exhausted.
 	bool is_end_of_intervals() const {
 		return rst_idx >= _scan->entropy_coded_data.size();
 	}
 
+	// Gets a reference to the RST interval currently being decoded.
 	const std::vector<uint8_t>& cur_interval() const {
 		if (is_end_of_intervals()) {
 			throw std::out_of_range("unexpected end of scan data");
@@ -35,8 +36,8 @@ private:
 		return _scan->entropy_coded_data[rst_idx];
 	}
 
-	// Read and populate the next byte. Returns true if there is now a
-	// byte available to read, and false if there is none.
+	// Reads the next byte in the current interval. Returns true if there is
+	// now a byte available to read, and false if there is none.
 	bool next_byte() {
 		if (is_end_of_intervals()) return false;
 
@@ -58,24 +59,21 @@ private:
 
 		return true;
 	}
-public:
-	// This function must be called from outside.
-	bool next_rst() {
-		rst_idx++;
-		if (is_end_of_intervals()) {
-			msg::debug("DECODE: reached end of intervals");
-			return false;
+
+	// Reads the next bit from the bitstream. Returns -1 if no bit could be
+	// read. Otherwise, returns 0x1 for a 1 bit, 0x0 for a 0 bit.
+	int8_t next_bit() {
+		if (bit_idx >= 8) {
+			if (!next_byte()) return -1;
 		}
 
-		byte_idx = 0;
-		if(!next_byte()) return false;
+		uint8_t bit = (cur_byte >> (7 - bit_idx)) & 0x1;
 
-		// DC predictor is reset on each RST interval.
-		dc_reset();
-
-		return true;
+		bit_idx++;
+		return bit;
 	}
 
+	// Sign-extends a T-bit coded coefficient value V.
 	static int16_t extend(int16_t v, int16_t t) {
 		int16_t v_t = 0x1 << (t - 1);
 
@@ -88,24 +86,6 @@ public:
 		}
 	}
 
-	ScanDecodeView(const Scan& scan) : DcPredictor(scan.num_components), _scan(&scan) {
-		// Prime current byte
-		next_byte();
-	}
-
-	const Scan& scan() const { return *_scan; }
-
-	int8_t next_bit() {
-		if (bit_idx >= 8) {
-			if (!next_byte()) return -1;
-		}
-
-		uint8_t bit = (cur_byte >> (7 - bit_idx)) & 0x1;
-
-		bit_idx++;
-		return bit;
-	}
-
 	// Decodes a huffman-coded symbol. The symbol itself will be 8 bits;
 	// a special value of -1 indicates no value could be read.
 	int16_t decode_symbol(const HuffmanTable& table) {
@@ -113,6 +93,15 @@ public:
 		int8_t bit = 0;
 		int16_t value = 0;
 
+		// Huffman codes are variable length, and there is no indication
+		// of that length in huffman-coded data. So we need to
+		// progressively read one bit at a time and check if the
+		// resulting values match anything.
+		//
+		// The huffman codes used in JPEG compression are generated in
+		// such a way that no code is ever the prefix for a longer
+		// code. No need to worry about accidentally returning the
+		// wrong value.
 		for (int bits = 1; bits <= 16; bits++) {
 			bit = next_bit();
 			if (bit == -1) {
@@ -152,7 +141,36 @@ public:
 
 		return bits;
 	}
+public:
+	// Advances to the next RST interval. Returns true if successfully
+	// advanced to next interval, false otherwise.
+	bool next_rst() {
+		rst_idx++;
+		if (is_end_of_intervals()) {
+			msg::debug("DECODE: reached end of intervals");
+			return false;
+		}
 
+		// Read first byte in new interval
+		byte_idx = 0;
+		if(!next_byte()) return false;
+
+		// DC predictor is reset on each RST interval.
+		dc_reset();
+
+		return true;
+	}
+
+	ScanDecodeView(const Scan& scan) : DcPredictor(scan.num_components), _scan(&scan) {
+		// Consume first byte right away so next_bit has something to
+		// read.
+		next_byte();
+	}
+
+	// Allow const access to scan to enable reading dimension info.
+	const Scan& scan() const { return *_scan; }
+
+	// Decodes the next symbol as a DC DCT coefficient.
 	int16_t decode_dc_coeff(const HuffmanTable& table) {
 		int16_t& pred = dc_pred();
 		int16_t ssss = decode_symbol(table);
@@ -161,7 +179,6 @@ public:
 			throw std::runtime_error("decode_dc_coeff: failed to decode ssss symbol");
 		}
 
-		// Don't need to do anything in this case, so just end early
 		if (ssss == 0) {
 			return pred;
 		}
@@ -170,13 +187,13 @@ public:
 		if (v < 0) throw std::runtime_error("decode_dc_coeff: failed to decode diff");
 
 		int16_t diff = extend(v, ssss);
-
 		int16_t coeff = pred + diff;
 		pred = coeff;
 
 		return coeff;
 	}
 
+	// Decodes the next symbol as an AC DCT coefficient and run length.
 	AcCoeff decode_ac_coeff(const HuffmanTable& table) {
 		int16_t rs = decode_symbol(table);
 		if (rs == -1) throw std::runtime_error("decode_ac_coeff: failed to decode rs symbol");
@@ -197,6 +214,7 @@ public:
 	}
 };
 
+// Implementation of the is_coding_policy concept for normal decoding processes.
 class DecodePolicy {
 public:
 	static inline const std::string phase_name = "DECODE";
@@ -231,6 +249,8 @@ public:
 
 		// Undo quantization, then IDCT
 		auto detransform = dct_mat * (tmp_block.ptwise_mul(q_tbl.data)) * dct_mat_t;
+
+		// Level shift and write to component
 		for (size_t y = 0; y < 8; y++) {
 			for (size_t x = 0; x < 8; x++) {
 				double level = detransform[x, y] + 128;
@@ -246,8 +266,12 @@ public:
 	static void flush(ScanDecodeView& scan_view) {}
 };
 
+// Class encapsulating the JPEG decoding algorithm. This decoder supports only
+// baseline huffman coding.
 class JpegDecoder : CodingBase<DecodePolicy, ScanDecodeView> {
 private:
+	// Decodes a single JPEG frame. CompressedJpegData is passed as well
+	// for access to the tables needed for decoding.
 	std::vector<RawComponent> decode_frame(const CompressedJpegData& data, const Frame& frame) {
 		std::vector<RawComponent> components;
 
@@ -295,6 +319,7 @@ private:
 	}
 
 public:
+	// Decompress the data contained in a JPEG object.
 	std::vector<RawComponent> decode(const CompressedJpegData& data) {
 		msg::info("Decoding compressed data");
 
