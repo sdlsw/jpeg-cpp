@@ -1,5 +1,8 @@
 export module jpeg:data;
 
+// data.cpp:
+// Data structures and constants common among all other files.
+
 import std;
 import msg;
 
@@ -93,6 +96,9 @@ const std::map<CodingType, std::string> str_from_coding_type {
 	{CodingType::huffman,    "HUFFMAN"},
 	{CodingType::arithmetic, "ARITHMETIC"}
 };
+
+// Markers in JPEG files are two bytes, 0xFFnn. The first byte is always 0xFF.
+const uint8_t mark_start = 0xFF;
 
 // Bitfield marker bases and masks.
 const uint8_t sof_base   = 0xC0;

@@ -1,5 +1,8 @@
 export module jpeg:tables;
 
+// tables.cpp
+// Hardcoded tables and functions to generate new ones.
+
 import msg;
 
 import :data;

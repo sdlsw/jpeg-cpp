@@ -1,5 +1,8 @@
 export module jpeg:decode;
 
+// decode.cpp:
+// Implements the JPEG decoding procedure.
+
 import std;
 import msg;
 

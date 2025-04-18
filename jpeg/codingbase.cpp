@@ -1,5 +1,8 @@
 module jpeg:codingbase;
 
+// codingbase.cpp
+// Defines common code shared between the encode and decode processes.
+
 import std;
 import msg;
 

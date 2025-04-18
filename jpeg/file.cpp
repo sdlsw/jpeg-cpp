@@ -1,5 +1,8 @@
 export module jpeg:file;
 
+// file.cpp:
+// Classes representing file readers and writers for JPEG and BMP.
+
 import std;
 import msg;
 

@@ -1,5 +1,8 @@
 export module jpeg:encode;
 
+// encode.cpp:
+// Implements the JPEG encoding procedure.
+
 import std;
 import msg;
 

@@ -1,3 +1,7 @@
+// jpeg.cpp:
+// Parent file for JPEG module. Defines what module partitions are part of the
+// public interface.
+
 export module jpeg;
 export import :data;
 export import :decode;
