@@ -9,8 +9,7 @@ set(
 
 project(jpeg-impl VERSION 1.0 LANGUAGES CXX)
 
-# Compiler options. NOTE: Only using C++23 here because `import std` requires
-# it, everything else will use up to C++20.
+# Compiler options.
 add_library(compiler-flags INTERFACE)
 target_compile_features(compiler-flags INTERFACE cxx_std_23)
 set(msvc "$<COMPILE_LANG_AND_ID:CXX,MSVC>")
@@ -20,4 +19,5 @@ add_subdirectory(msg)
 add_subdirectory(jpeg)
 
 add_executable(main main.cpp)
+set_target_properties(main PROPERTIES OUTPUT_NAME "jpeg")
 target_link_libraries(main PUBLIC msg jpeg compiler-flags)

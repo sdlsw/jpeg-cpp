@@ -24,15 +24,6 @@ void printmat(const jpeg::Matrix<T, W, H>& mat) {
 	std::cout << std::string(mat) << std::endl;
 }
 
-void othertest() {
-	std::int16_t v = 0b0000'0000'1010'0010;
-	std::int16_t t = 9;
-
-	std::int16_t extended = jpeg::ScanDecodeView::extend(v, t);
-
-	std::cout << std::format("{:d} {:b}", extended, (std::uint16_t) extended) << std::endl;
-}
-
 void matrixtest() {
 	jpeg::Matrix<std::uint16_t, 8, 8> imat;
 	try {
@@ -182,7 +173,7 @@ public:
 
 void usage() {
 	std::cout << (
-		"usage: main.exe [-h|--help] MODE [INPUT_FILE] [-o OUTPUT_FILE] [options...]\n"
+		"usage: jpeg [-h|--help] MODE [INPUT_FILE] [-o OUTPUT_FILE] [options...]\n"
 		"options:\n"
 		"	-h|--help      Ignores every other option and prints this message.\n"
 		"	-o OUT         Specify output file. Accepted by the following modes:\n"
@@ -255,8 +246,6 @@ int main_inner(int argc, char* argv[]) {
 		print_all_markers();
 	} else if (mode == "matrixtest") {
 		matrixtest();
-	} else if (mode == "othertest") {
-		othertest();
 	} else if (mode == "scan") {
 		auto& filepath = in_file_arg(args, "scan");
 		if (filepath == empty_path) return 1;
