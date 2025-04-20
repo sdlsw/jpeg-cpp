@@ -202,7 +202,7 @@ int main_inner(int argc, char* argv[]) {
 
 int main(int argc, char* argv[]) {
 	try {
-		main_inner(argc, argv);
+		return main_inner(argc, argv);
 	} catch (const std::ios_base::failure& e) {
 		// FIXME Unfortunately on Windows this message is completely
 		// useless... may need to replace the ios_base::failure throws
