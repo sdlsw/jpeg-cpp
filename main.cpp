@@ -6,48 +6,6 @@ import msg;
 static const std::string empty_path = "";
 static const std::string default_bmp = "out.bmp";
 static const std::string default_jpeg = "out.jpeg";
-static const std::string default_filetest_bmp = "ftest.bmp";
-static const std::string default_filetest_jpeg = "ftest.jpeg";
-
-void print_one_marker(unsigned char n) {
-	jpeg::Marker marker { n };
-	std::cout << std::string(marker) << std::endl;
-}
-
-// Prints every possible JPEG file marker to make sure they're parsed
-// correctly.
-void print_all_markers() {
-	for (unsigned int i=0x00; i <= 0xFF; i++) print_one_marker(i);
-}
-
-template<typename T, size_t W, size_t H>
-void printmat(const jpeg::Matrix<T, W, H>& mat) {
-	std::cout << std::string(mat) << std::endl;
-}
-
-void matrixtest() {
-	jpeg::Matrix<std::uint16_t, 8, 8> imat;
-	try {
-		printmat(imat);
-	} catch (const std::exception& ex) {
-		msg::error("exc: {}", ex.what());
-	}
-
-	for (int i = 0; i < 64; i++) {
-		auto& valref = imat.zz(i);
-		valref = i;
-	}
-
-	printmat(imat);
-	printmat(jpeg::dct_mat);
-	printmat(jpeg::dct_mat_t);
-
-	auto transformed = jpeg::dct_mat_t * imat * jpeg::dct_mat;
-	printmat(transformed);
-
-	auto detransformed = jpeg::dct_mat * transformed * jpeg::dct_mat_t;
-	printmat(detransformed);
-}
 
 void usage() {
 	std::cout << (
@@ -96,6 +54,205 @@ std::tuple<const std::string&, const std::string&> io_file_args(
 	}
 }
 
+class Mode {
+public:
+	const std::string name;
+	Mode(std::string&& name) : name{std::move(name)} {}
+	virtual int run(const arg::Args& args) = 0;
+};
+
+class EncodeMode : public Mode {
+public:
+	EncodeMode() : Mode("encode") {}
+
+	int run(const arg::Args& args) {
+		auto [infile, outfile] = io_file_args(args, name, default_jpeg);
+		if (infile == empty_path) return 1;
+
+		unsigned int quality = args.getopt_uint("-q", 80, 0, 100);
+		unsigned int subsamp = args.getopt_uint("-s", 2, 1, 2);
+
+		jpeg::BmpFile bmp_file { infile, std::ios_base::in };
+		jpeg::JpegEncoder encoder { quality };
+
+		auto raws = bmp_file.read(subsamp);
+		auto encoded = encoder.encode(raws);
+
+		jpeg::JpegFile jpeg { outfile, std::ios_base::out };
+		jpeg.write(encoded);
+
+		return 0;
+	}
+};
+
+class DecodeMode : public Mode {
+public:
+	DecodeMode() : Mode("decode") {}
+
+	int run(const arg::Args& args) {
+		auto [infile, outfile] = io_file_args(args, name, default_bmp);
+		if (infile == empty_path) return 1;
+
+		jpeg::JpegFile jpeg_file { infile, std::ios_base::in };
+		jpeg::JpegDecoder decoder;
+
+		auto jpeg_data = jpeg_file.read();
+		auto decoded = decoder.decode(jpeg_data);
+
+		jpeg::BmpFile bmp { outfile, std::ios_base::out };
+		bmp.write(decoded);
+
+		return 0;
+	}
+};
+
+class ScanMode : public Mode {
+public:
+	ScanMode() : Mode("scan") {}
+
+	int run(const arg::Args& args) {
+		auto& filepath = in_file_arg(args, name);
+		if (filepath == empty_path) return 1;
+
+		jpeg::JpegFile jpeg_file { filepath, std::ios_base::in };
+		jpeg::CompressedJpegData jpeg_data = jpeg_file.read();
+
+		std::cout << "Dumping read file..." << std::endl;
+		std::cout << std::string(jpeg_data) << std::endl;
+
+		return 0;
+	}
+};
+
+class QualityTestMode : public Mode {
+public:
+	QualityTestMode() : Mode("qualitytest") {}
+
+	int run(const arg::Args& args) {
+		auto infile = in_file_arg(args, name);
+		if (infile == empty_path) return 1;
+
+		jpeg::BmpFile in_bmp { infile, std::ios_base::in };
+		auto raws = in_bmp.read();
+
+		for (unsigned int q = 0; q <= 100; q += 10) {
+			auto fname = std::format("qualitytest{:03d}.jpg", q);
+			jpeg::JpegEncoder encoder { q } ;
+			jpeg::JpegFile jpeg { fname, std::ios_base::out };
+
+			jpeg.write(encoder.encode(raws));
+		}
+
+		return 0;
+	}
+};
+
+// Both BmpFile and JpegFile have the same general interface, so can use a
+// template for testing them.
+template<typename FileType>
+class FileTestMode : public Mode {
+public:
+	const std::string default_out_name;
+
+	FileTestMode(
+		std::string&& mode_name,
+		std::string&& default_out_name
+	) : Mode(std::move(mode_name)), default_out_name{default_out_name} {}
+
+	int run(const arg::Args& args) {
+		auto [infile, outfile] = io_file_args(args, name, default_out_name);
+		if (infile == empty_path) return 1;
+
+		FileType in_fobj { infile, std::ios_base::in };
+		auto intermediate = in_fobj.read();
+
+		FileType out_fobj { outfile, std::ios_base::out };
+		out_fobj.write(intermediate);
+
+		return 0;
+	}
+};
+
+class MarkerTestMode : public Mode {
+private:
+	static void print_one_marker(unsigned char n) {
+		jpeg::Marker marker { n };
+		std::cout << std::string(marker) << std::endl;
+	}
+public:
+	MarkerTestMode() : Mode("markertest") {}
+
+	// Prints every possible JPEG file marker to make sure they're parsed
+	// correctly.
+	int run(const arg::Args& args) {
+		for (unsigned int i=0x00; i <= 0xFF; i++) print_one_marker(i);
+		return 0;
+	}
+};
+
+class MatrixTestMode : public Mode {
+private:
+	// Convenience function for printing a matrix.
+	template<typename T, size_t W, size_t H>
+	static void printmat(const jpeg::Matrix<T, W, H>& mat) {
+		std::cout << std::string(mat) << std::endl;
+	}
+public:
+	MatrixTestMode() : Mode("matrixtest") {}
+
+	// Tests matrix multiplication and the DCT transform.
+	int run(const arg::Args& args) {
+		jpeg::Matrix<std::uint16_t, 8, 8> imat;
+		try {
+			printmat(imat);
+		} catch (const std::exception& ex) {
+			msg::error("exc: {}", ex.what());
+		}
+
+		for (int i = 0; i < 64; i++) {
+			auto& valref = imat.zz(i);
+			valref = i;
+		}
+
+		printmat(imat);
+		printmat(jpeg::dct_mat);
+		printmat(jpeg::dct_mat_t);
+
+		auto transformed = jpeg::dct_mat_t * imat * jpeg::dct_mat;
+		printmat(transformed);
+
+		auto detransformed = jpeg::dct_mat * transformed * jpeg::dct_mat_t;
+		printmat(detransformed);
+
+		return 0;
+	}
+};
+
+// Convenience function to cut down on repetition a bit...
+template<typename ModeType, typename... Args>
+void push_mode(std::vector<std::unique_ptr<Mode>>& v, Args&&... args) {
+	v.push_back(std::make_unique<ModeType>(std::forward<Args>(args)...));
+}
+
+// Creates a vector containing all mode objects (as unique_ptrs to base)
+auto make_mode_vec() {
+	std::vector<std::unique_ptr<Mode>> v;
+
+	// Main modes
+	push_mode<EncodeMode>(v);
+	push_mode<DecodeMode>(v);
+	push_mode<ScanMode>(v);
+
+	// Tests
+	push_mode<QualityTestMode>(v);
+	push_mode<FileTestMode<jpeg::JpegFile>>(v, "filetest-jpeg", "ftest.jpeg");
+	push_mode<FileTestMode<jpeg::BmpFile>>(v, "filetest-bmp", "ftest.bmp");
+	push_mode<MarkerTestMode>(v);
+	push_mode<MatrixTestMode>(v);
+
+	return v;
+}
+
 int main_inner(int argc, char* argv[]) {
 	arg::ArgParser parser {{
 		{"--help", arg::noconsume},
@@ -118,86 +275,17 @@ int main_inner(int argc, char* argv[]) {
 		return 1;
 	}
 
-	const std::string& mode = args.positional[0];
-	
-	if (mode == "markertest") {
-		print_all_markers();
-	} else if (mode == "matrixtest") {
-		matrixtest();
-	} else if (mode == "scan") {
-		auto& filepath = in_file_arg(args, "scan");
-		if (filepath == empty_path) return 1;
+	const std::string& modestr = args.positional[0];
 
-		jpeg::JpegFile jpeg_file { filepath, std::ios_base::in };
-		jpeg::CompressedJpegData jpeg_data = jpeg_file.read();
-
-		std::cout << "Dumping read file..." << std::endl;
-		std::cout << std::string(jpeg_data) << std::endl;
-	} else if (mode == "decode") {
-		auto [infile, outfile] = io_file_args(args, "decode", default_bmp);
-		if (infile == empty_path) return 1;
-
-		jpeg::JpegFile jpeg_file { infile, std::ios_base::in };
-		jpeg::JpegDecoder decoder;
-
-		auto jpeg_data = jpeg_file.read();
-		auto decoded = decoder.decode(jpeg_data);
-
-		jpeg::BmpFile bmp { outfile, std::ios_base::out };
-		bmp.write(decoded);
-	} else if (mode == "encode") {
-		auto [infile, outfile] = io_file_args(args, "encode", default_jpeg);
-		if (infile == empty_path) return 1;
-
-		unsigned int quality = args.getopt_uint("-q", 80, 0, 100);
-		unsigned int subsamp = args.getopt_uint("-s", 2, 1, 2);
-
-		jpeg::BmpFile bmp_file { infile, std::ios_base::in };
-		jpeg::JpegEncoder encoder { quality };
-
-		auto raws = bmp_file.read(subsamp);
-		auto encoded = encoder.encode(raws);
-
-		jpeg::JpegFile jpeg { outfile, std::ios_base::out };
-		jpeg.write(encoded);
-	} else if (mode == "filetest-bmp") {
-		auto [infile, outfile] = io_file_args(args, "filetest-bmp", default_filetest_bmp);
-		if (infile == empty_path) return 1;
-
-		jpeg::BmpFile in_bmp { infile, std::ios_base::in };
-		auto raws = in_bmp.read();
-
-		jpeg::BmpFile out_bmp { outfile, std::ios_base::out };
-		out_bmp.write(raws);
-	} else if (mode == "filetest-jpeg") {
-		auto [infile, outfile] = io_file_args(args, "filetest-jpeg", default_filetest_jpeg);
-		if (infile == empty_path) return 1;
-
-		jpeg::JpegFile in_jpeg { infile, std::ios_base::in };
-		auto jpeg_data = in_jpeg.read();
-
-		jpeg::JpegFile out_jpeg { outfile, std::ios_base::out };
-		out_jpeg.write(jpeg_data);
-	} else if (mode == "qualitytest") {
-		auto infile = in_file_arg(args, "qualitytest");
-		if (infile == empty_path) return 1;
-
-		jpeg::BmpFile in_bmp { infile, std::ios_base::in };
-		auto raws = in_bmp.read();
-
-		for (unsigned int q = 0; q <= 100; q += 10) {
-			auto fname = std::format("qualitytest{:03d}.jpg", q);
-			jpeg::JpegEncoder encoder { q } ;
-			jpeg::JpegFile jpeg { fname, std::ios_base::out };
-
-			jpeg.write(encoder.encode(raws));
-		}
-	} else {
-		msg::error("unrecognized mode {}", mode);
-		return 1;
+	auto modes = make_mode_vec();
+	for (const auto& mode : modes) {
+		if (mode->name == modestr) return mode->run(args);
 	}
+	
+	msg::error("unrecognized mode {}", modestr);
+	usage();
 
-	return 0;
+	return 1;
 }
 
 int main(int argc, char* argv[]) {
