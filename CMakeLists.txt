@@ -15,9 +15,10 @@ target_compile_features(compiler-flags INTERFACE cxx_std_23)
 set(msvc "$<COMPILE_LANG_AND_ID:CXX,MSVC>")
 target_compile_options(compiler-flags INTERFACE "$<${msvc}:-W3>")
 
+add_subdirectory(arg)
 add_subdirectory(msg)
 add_subdirectory(jpeg)
 
 add_executable(main main.cpp)
 set_target_properties(main PROPERTIES OUTPUT_NAME "jpeg")
-target_link_libraries(main PUBLIC msg jpeg compiler-flags)
+target_link_libraries(main PUBLIC arg msg jpeg compiler-flags)

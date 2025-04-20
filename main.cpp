@@ -1,3 +1,4 @@
+import arg;
 import std;
 import jpeg;
 import msg;
@@ -48,129 +49,6 @@ void matrixtest() {
 	printmat(detransformed);
 }
 
-struct Args {
-	std::string progname;
-	std::vector<std::string> positional;
-	std::map<std::string, std::string> options;
-
-	bool has_opt(const std::string& opt) const {
-		return options.contains(opt);
-	}
-
-	unsigned int getopt_uint(
-		const std::string& opt,
-		unsigned int default_value = 0,
-		unsigned int range_low = 0,
-		unsigned int range_high = -1
-	) const {
-		if (!has_opt(opt)) return default_value;
-
-		auto value = (unsigned int) stoi(options.at(opt));
-
-		if (value < range_low) {
-			throw std::runtime_error(std::format(
-				"{}: cannot be less than {}",
-				opt, range_low
-			));
-		} else if (value > range_high) {
-			throw std::runtime_error(std::format(
-				"{}: cannot be greater than {}",
-				opt, range_high
-			));
-		} else {
-			return value;
-		}
-	}
-};
-
-class ArgParser {
-private:
-	unsigned int n = 0;
-	unsigned int cur_argc = 0;
-	char** cur_argv;
-	bool fail = false;
-
-	std::map<std::string, bool> opt_def;
-
-	static void validate_opt_def(const std::map<std::string, bool>& opt_def) {
-		for (const auto& [key, _] : opt_def) {
-			if (key.find('-') != 0) throw std::invalid_argument("bad opt_def");
-		}
-	}
-
-	void validate_opt(const std::string& opt) const {
-		if (!opt_def.contains(opt)) {
-			throw std::runtime_error(std::format(
-				"unknown option '{}'", opt
-			));
-		}
-	}
-
-	std::string consume_str() {
-		if (n >= cur_argc) {
-			fail = true;
-			return "";
-		}
-
-		auto s = std::string(cur_argv[n]);
-		n++;
-
-		return std::move(s);
-	}
-
-	void consume_opt(Args& args, const std::string& opt) {
-		validate_opt(opt);
-		if (opt_def[opt]) {
-			// consuming option
-			args.options[opt] = consume_str();
-			if (fail) throw std::runtime_error(std::format(
-				"opt '{}' expected argument, but none provided", opt
-			));
-		} else {
-			// non-consuming option
-			args.options[opt] = "";
-		}
-	}
-public:
-	static const bool consume = true;
-	static const bool noconsume = false;
-
-	ArgParser(const std::map<std::string, bool>& opt_def) {
-		validate_opt_def(opt_def);
-		this->opt_def = opt_def;
-	}
-
-	ArgParser(std::map<std::string, bool>&& opt_def) {
-		validate_opt_def(opt_def);
-		this->opt_def = std::move(opt_def);
-	}
-
-	Args parse(int argc, char* argv[]) {
-		n = 0;
-		cur_argc = argc;
-		cur_argv = argv;
-		fail = false;
-
-		Args args;
-		std::string s;
-
-		args.progname = consume_str();
-		if (fail) throw std::runtime_error("could not parse progname");
-
-		while (n < cur_argc) {
-			s = consume_str();
-
-			if (s.find('-') == 0) {
-				consume_opt(args, s);
-			} else {
-				args.positional.push_back(std::move(s));
-			}
-		}
-
-		return std::move(args);
-	}
-};
-
 void usage() {
 	std::cout << (
 		"usage: jpeg [-h|--help] MODE [INPUT_FILE] [-o OUTPUT_FILE] [options...]\n"
@@ -196,7 +74,7 @@ void usage() {
 	) << std::endl;
 }
 
-const std::string& in_file_arg(const Args& args, const std::string& mode) {
+const std::string& in_file_arg(const arg::Args& args, const std::string& mode) {
 	// 2nd positional arg is always input file
 	if (args.positional.size() < 2) {
 		msg::error("{} mode requires input file argument", mode);
@@ -207,7 +85,7 @@ const std::string& in_file_arg(const Args& args, const std::string& mode) {
 }
 
 std::tuple<const std::string&, const std::string&> io_file_args(
-	const Args& args, const std::string& mode, const std::string& default_out
+	const arg::Args& args, const std::string& mode, const std::string& default_out
 ) {
 	auto& in_file = in_file_arg(args, mode);
 
@@ -219,12 +97,12 @@ std::tuple<const std::string&, const std::string&> io_file_args(
 }
 
 int main_inner(int argc, char* argv[]) {
-	ArgParser parser {{
-		{"--help", ArgParser::noconsume},
-		{"-h", ArgParser::noconsume},
-		{"-o", ArgParser::consume},
-		{"-q", ArgParser::consume},
-		{"-s", ArgParser::consume}
+	arg::ArgParser parser {{
+		{"--help", arg::noconsume},
+		{"-h",     arg::noconsume},
+		{"-o",     arg::consume},
+		{"-q",     arg::consume},
+		{"-s",     arg::consume}
 	}};
 
 	auto args = parser.parse(argc, argv);
