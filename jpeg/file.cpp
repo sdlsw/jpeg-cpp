@@ -759,7 +759,7 @@ public:
 
 		if (mode != std::ios_base::in && mode != std::ios_base::out) {
 			throw JpegFileError(
-				"BmpFile(): invalid mode, pick one of: ios_base::in, ios_base::out"
+				"JpegFile(): invalid mode, pick one of: ios_base::in, ios_base::out"
 			);
 		}
 
