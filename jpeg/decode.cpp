@@ -333,6 +333,11 @@ public:
 		}
 
 		const Frame& frame = data.frames()[0];
+
+		if (!frame.type.is_baseline()) {
+			throw std::runtime_error("For now, only baseline encoding is supported.");
+		}
+
 		return decode_frame(data, frame);
 	}
 };
