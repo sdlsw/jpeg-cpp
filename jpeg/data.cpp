@@ -6,7 +6,7 @@ export module jpeg:data;
 import std;
 import msg;
 
-#define HUFFMAN_EXTEND true
+#define HUFFMAN_EXTEND false
 
 using std::uint8_t;
 using std::int8_t;
@@ -614,14 +614,162 @@ struct AppSegment {
 	}
 };
 
+// A generic container for various types of tables involved in JPEG
+// compression. TableMaps have 4 "slots" into which tables may be installed.
+// The state of these slots may be saved and loaded, and any tables
+// installed to this map will be maintained even when overwritten.
+template<typename TableType>
+class TableMap {
+private:
+	static const inline unsigned int n_slots = 4;
+	static const inline std::array<int8_t, n_slots> no_tables { -1, -1, -1, -1 };
+
+	// The tables stored in this map.
+	std::vector<TableType> tables;
+
+	// A 4-tuple mapping a jpeg table destination value to an index
+	// in `tables`. This value may not be accessed directly. Once all
+	// desired tables are installed, `save_dest` must be called at least
+	// once. The tables are then accessible through `get(0, dest_id)`.
+	std::array<int8_t, n_slots> table_dest { -1, -1, -1, -1 };
+
+	// Saved values of table_dest.
+	std::vector<std::array<int8_t, n_slots>> table_dest_history;
+
+	// Bounds check for `dest_id` parameters.
+	static void check_dest_id(uint8_t dest_id) {
+		if (dest_id >= n_slots) {
+			throw std::out_of_range(std::format(
+				"dest_id >= {}", n_slots
+			));
+		}
+	}
+
+	// Bounds check for `hist_id` parameters.
+	void check_hist_id(size_t hist_id) const {
+		if (hist_id >= table_dest_history.size()) {
+			throw std::out_of_range("hist_id out of range");
+		}
+	}
+
+	// Gets a history entry. If `hist_id` is negative, returns an empty
+	// history entry.
+	auto& hist_get_extended(int hist_id) const {
+		if (hist_id < 0) {
+			return no_tables;
+		} else {
+			return table_dest_history[hist_id];
+		}
+	}
+public:
+	const int hist_last() const {
+		return static_cast<int>(table_dest_history.size()) - 1;
+	}
+
+	// Gets the table at the given `dest_id`, at `hist_id` point in
+	// history.
+	const TableType& get(size_t hist_id, uint8_t dest_id) const {
+		check_hist_id(hist_id);
+		check_dest_id(dest_id);
+
+		int8_t table_idx = table_dest_history[hist_id][dest_id];
+
+		if (table_idx < 0) {
+			throw std::runtime_error(std::format(
+				"No table installed for (hist, dest) = ({}, {})",
+				hist_id, dest_id
+			));
+		}
+
+		if (table_idx >= tables.size()) {
+			throw std::out_of_range(std::format(
+				"Table index {} out of valid range!", table_idx
+			));
+		}
+
+		return tables[table_idx];
+	}
+
+	// Gets a vector of const ptrs to every new table that was introduced
+	// between `hist_id - 1` and `hist_id`. If `hist_id` is 0, then this
+	// just returns every set table for the first history entry.
+	auto get_differential(size_t hist_id) const {
+		check_hist_id(hist_id);
+
+		std::vector<std::tuple<const TableType*, unsigned int>> v;
+
+		auto& prev_dest = hist_get_extended(static_cast<int>(hist_id) - 1);
+		auto& cur_dest = table_dest_history[hist_id];
+
+		for (unsigned int i = 0; i < n_slots; i++) {
+			if (cur_dest[i] != prev_dest[i] && cur_dest[i] >= 0) {
+				const auto& tbl = tables[cur_dest[i]];
+				v.emplace(v.end(), &tbl, i);
+			}
+		}
+
+		return v;
+	}
+
+	// Saves the current state of table_dest.
+	void save_dest() {
+		table_dest_history.push_back(table_dest);
+	}
+
+	// Installs a new table to this TableMap. Previously installed tables
+	// will be maintained.
+	template<typename... Args>
+	void install_table(uint8_t dest_id, Args&&... args) {
+		check_dest_id(dest_id);
+		if (table_dest[dest_id] >= 0) {
+			msg::debug("Replacing table at dest {}", dest_id);
+		}
+
+		// Construct new table in place and add a reference to it.
+		tables.emplace(tables.end(), std::forward<Args>(args)...);
+		table_dest[dest_id] = tables.size() - 1;
+	}
+
+	explicit operator std::string() const {
+		std::stringstream out;
+
+		out << "TABLES:\n";
+
+		if (tables.size() == 0) {
+			out << "None set.\n";
+		} else {
+			for (unsigned int i = 0; i < tables.size(); i++) {
+				const auto& tbl = tables[i];
+				out << std::format("TABLE{}:\n{}\n", i, std::string(tbl));
+			}
+		}
+
+		out << "HISTMAP:\n";
+		if (table_dest_history.size() == 0) {
+			out << "Empty.\n";
+		} else {
+			for (unsigned int i = 0; i < table_dest_history.size(); i++) {
+				const auto& hist = table_dest_history[i];
+				out << std::format(
+					"{}: ({}, {}, {}, {})\n",
+					i, hist[0], hist[1], hist[2], hist[3]
+				);
+			}
+		}
+
+		out << '\n';
+
+		return out.str();
+	}
+};
+
 struct QuantizationTable {
-	bool set = false;
 	Matrix<uint16_t, 8, 8> data;
 
 	QuantizationTable() = default;
-	QuantizationTable(const std::initializer_list<uint16_t>& ilist) : data{ilist}, set{true} {}
-	QuantizationTable(const Matrix<uint16_t, 8, 8>& mat) : data{mat}, set{true} {}
-	QuantizationTable(Matrix<uint16_t, 8, 8>&& mat) : data{std::move(mat)}, set{true} {}
+	QuantizationTable(const std::initializer_list<uint16_t>& ilist) : data{ilist} {}
+	QuantizationTable(const Matrix<uint16_t, 8, 8>& mat) : data{mat} {}
+	QuantizationTable(Matrix<uint16_t, 8, 8>&& mat) : data{std::move(mat)} {}
 
 	// Determines the precision value for this table. 0 indicates an 8-bit
 	// table, and 1 indicates a 16-bit table. This value is only used when
@@ -635,7 +783,6 @@ struct QuantizationTable {
 	}
 
 	explicit operator std::string() const {
-		if (!set) return "not set";
 		return std::string(data);
 	}
 };
@@ -681,11 +828,6 @@ const HuffmanCode huffman_zero { 0, 0, 0 };
 
 // Struct representing a Huffman code table.
 struct HuffmanTable {
-	// These tables are included in a fixed-size array. To distinguish
-	// between tables that have been initialized and those that have not,
-	// we use this value.
-	bool set = false;
-
 	// This vector contains the three tables HUFFSIZE, HUFFCODE and HUFFVAL,
 	// as specified in section C.
 	std::vector<HuffmanCode> codes;
@@ -701,7 +843,6 @@ struct HuffmanTable {
 	HuffmanTable(const std::initializer_list<HuffmanCode> ilist) {
 		codes.insert(codes.end(), ilist.begin(), ilist.end());
 		populate_codes();
-		set = true;
 	}
 
 	// Generates the table HUFFCODE, and populates additional lookup
@@ -748,10 +889,6 @@ struct HuffmanTable {
 	//      // handle missing value, valid huffman codes never have 0 bits
 	// }
 	const HuffmanCode& lookup_value(uint8_t value) const {
-		if (!set) {
-			throw std::runtime_error("Cannot lookup value in unset table");
-		}
-
 		return *value_ptrs[value];
 	}
 
@@ -759,10 +896,6 @@ struct HuffmanTable {
 	// found, returns -1. If the code is found, its value will be an 8-bit
 	// unsigned integer fitted in the lower half of the returned int16_t.
 	int16_t lookup_code(uint16_t lookup_code, uint8_t bits) const {
-		if (!set) {
-			throw std::runtime_error("Cannot lookup code in unset table");
-		}
-
 		// Optimization: `codes` is sorted by code length, smallest
 		// first. We take advantage of this by iterating only
 		// over the codes that are N bits long, eliminating the
@@ -785,10 +918,6 @@ struct HuffmanTable {
 	}
 
 	explicit operator std::string() const {
-		if (!set) {
-			return "not set";
-		}
-
 		if (HUFFMAN_EXTEND) {
 			std::stringstream out;
 			out << std::format("VALUES...\n");
@@ -803,10 +932,10 @@ struct HuffmanTable {
 		}
 	}
 
-	// A bit hacky... but most JPEG files I've seen in the wild all use
-	// the tables suggested by the JPEG standard. To save some time, this
-	// function will spit out the codes formatted as an initializer list
-	// that can be used in C++ code.
+	// A bit hacky... but most baseline process JPEG files I've seen in the
+	// wild all use the tables suggested by the JPEG standard. To save some
+	// time, this function will spit out the codes formatted as an
+	// initializer list that can be used in C++ code.
 	// TODO Implement custom tables?
 	std::string as_init_list() const {
 		std::stringstream out;
@@ -854,6 +983,10 @@ struct ScanComponentParams {
 // 
 // The exact ordering of blocks in the scan is not trivial. See BlockView.
 struct Scan {
+	// The index of this scan in the scan array. Set automatically
+	// by Frame::new_scan().
+	unsigned int index;
+
 	// The number of components in this scan. If >1, this scan contains
 	// interleaved data.
 	uint8_t num_components = 0;
@@ -885,6 +1018,12 @@ struct Scan {
 		}
 
 		return sum;
+	}
+
+	// Shorthand for getting a const reference to the nth component
+	// parameter set.
+	const ScanComponentParams& comp_params(uint8_t n) const {
+		return component_params[n];
 	}
 
 	explicit operator std::string() const {
@@ -970,6 +1109,10 @@ struct Frame {
 	// Global settings for how the frame shall be encoded.
 	FrameType type;
 
+	// The index of this frame in the frame array. Set automatically
+	// by CompressedJpegData::new_frame().
+	unsigned int index;
+
 	// Number of bits on one image sample. Should always be 8 for baseline
 	// operation.
 	uint8_t sample_precision = 8;
@@ -983,9 +1126,73 @@ struct Frame {
 	// Number of components in this frame.
 	uint8_t num_components = 0;
 
+	// Destinations for the Huffman tables. Entropy coding tables are
+	// selected on a per-scan basis, so store them under the frame.
+	// FIXME may want to revisit for hierarchical, but i'm not sure anybody
+	// even uses it
+	TableMap<HuffmanTable> _ac_huff_tables;
+	TableMap<HuffmanTable> _dc_huff_tables;
+
 	// Parameters for each component in the scan.
 	std::vector<FrameComponentParams> component_params;
 	std::vector<Scan> scans;
+
+	// Creates a new scan in this frame.
+	Scan& new_scan() {
+		scans.emplace(scans.end());
+		_ac_huff_tables.save_dest();
+		_dc_huff_tables.save_dest();
+
+		Scan& s = scans.back();
+		s.index = scans.size() - 1;
+
+		return s;
+	}
+
+	// Gets a set of FrameComponentParams by searching for its component ID.
+	const FrameComponentParams& get_component_params_by_id(uint8_t id) const {
+		for (const auto& params : component_params) {
+			if (params.identifier == id) return params;
+		}
+
+		throw std::runtime_error(std::format(
+			"get_component_params_by_id: could not find params by id {}",
+			id
+		));
+	}
+
+	template <typename Self>
+	auto& ac_huff_tables(this Self& self) { return self._ac_huff_tables; }
+
+	template <typename Self>
+	auto& dc_huff_tables(this Self& self) { return self._dc_huff_tables; }
+
+	template <typename Self>
+	auto& huff_tables(this Self& self, TableClass cls) {
+		if (cls == TableClass::ac) {
+			return self.ac_huff_tables();
+		} else {
+			return self.dc_huff_tables();
+		}
+	}
+
+	// Obtains a reference to the proper huffman table to use for the nth
+	// component in the given scan.
+	const HuffmanTable& get_huff_table(
+		const Scan& scan,
+		unsigned int comp_index,
+		TableClass cls
+	) const {
+		uint8_t selector = 0;
+
+		if (cls == TableClass::dc) {
+			selector = scan.comp_params(comp_index).dc_entropy_coding_selector;
+		} else {
+			selector = scan.comp_params(comp_index).ac_entropy_coding_selector;
+		}
+
+		return huff_tables(cls).get(scan.index, selector);
+	}
 
 	// Determines the maximum horizontal sampling factor across all
 	// components.
@@ -1045,6 +1252,9 @@ struct Frame {
 			);
 		}
 
+		out << "DC HUFFMAN " << std::string(_dc_huff_tables);
+		out << "AC HUFFMAN " << std::string(_ac_huff_tables);
+
 		int count = 0;
 		for (const auto& scan : scans) {
 			out << std::format(
@@ -1063,16 +1273,10 @@ struct Frame {
 // entropy-coded data, comments and application segments, etc.
 class CompressedJpegData {
 private:
-	// Standard supports up to 4 slots for each type of table.
-	static const uint8_t num_tables = 4;
-
 	bool valid = false;
 	std::string _source_file {""};
 
-	// Destination arrays for each type of table.
-	std::array<QuantizationTable, num_tables> _q_tables;
-	std::array<HuffmanTable, num_tables> _ac_huff_tables;
-	std::array<HuffmanTable, num_tables> _dc_huff_tables;
+	TableMap<QuantizationTable> _q_tables;
 
 	// Application segments contained in this JPEG.
 	std::vector<AppSegment> _app_segments;
@@ -1093,26 +1297,51 @@ public:
 
 	auto& app_segments() { return _app_segments; }
 	auto& comments() { return _comments; }
-	auto& q_tables() { return _q_tables; }
-	auto& huff_tables(TableClass _class) {
-		if (_class == TableClass::dc) {
-			return _dc_huff_tables;
-		} else {
-			return _ac_huff_tables;
-		}
-	}
+
+	template <typename Self>
+	auto& q_tables(this Self& self) { return self._q_tables; }
+
 	auto& frames() { return _frames; }
 
-	const auto& q_tables() const { return _q_tables; }
-	const auto& huff_tables(TableClass _class) const {
-		if (_class == TableClass::dc) {
-			return _dc_huff_tables;
-		} else {
-			return _ac_huff_tables;
-		}
+	const auto& frames() const { return _frames; }
+
+	// Creates a new frame in this JPEG.
+	Frame& new_frame() {
+		_frames.emplace(_frames.end());
+		_q_tables.save_dest();
+
+		Frame& f = _frames.back();
+		f.index = _frames.size() - 1;
+
+		return f;
 	}
 
-	const auto& frames() const { return _frames; }
+	// Gets a reference to the current frame.
+	Frame& cur_frame() {
+		if (_frames.size() == 0) throw std::runtime_error(
+			"No frames, cannot get current."
+		);
+
+		return _frames.back();
+	}
+
+	// Convenience function. Creates new scan in current frame.
+	Scan& new_scan() {
+		return cur_frame().new_scan();
+	}
+
+	// Obtains a reference to the proper quantization table to use for the
+	// nth component in the given scan.
+	const QuantizationTable& get_qtable(
+		const Frame& frame,
+		const Scan& scan,
+		unsigned int comp_index
+	) const {
+		auto comp_id = scan.comp_params(comp_index).component_selector;
+		auto qsel = frame.get_component_params_by_id(comp_id).qtable_selector;
+
+		return _q_tables.get(frame.index, qsel);
+	}
 
 	explicit operator std::string() const {
 		std::stringstream out;
@@ -1125,14 +1354,7 @@ public:
 			out << "COM " << string_from_byte_vec(com) << '\n';
 		}
 
-		for (int i = 0; i < num_tables; i++) {
-			out << std::format("QTABLE{}:\n", i) << std::string(_q_tables[i]) << '\n';
-		}
-
-		for (int i = 0; i < num_tables; i++) {
-			out << std::format("DC HUFFTABLE{}: ", i) << std::string(_dc_huff_tables[i]) << '\n';
-			out << std::format("AC HUFFTABLE{}: ", i) << std::string(_ac_huff_tables[i]) << '\n';
-		}
+		out << "QUANTIZATION " << std::string(_q_tables);
 
 		if (_frames.size() == 0) {
 			out << "NO FRAMES\n";
@@ -1144,6 +1366,7 @@ public:
 					count,
 					std::string(f)
 				);
+				count++;
 			}
 		}
 
@@ -1152,7 +1375,6 @@ public:
 };
 
 const unsigned int block_size = 8;
-
 
 // Represents an uncompressed image component.
 class RawComponent {

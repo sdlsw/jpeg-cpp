@@ -120,6 +120,7 @@ protected:
 	template<typename ScanType>
 	static void code_scan(
 		const CompressedJpegData& data,
+		const Frame& frame,
 		ScanType& scan,
 		std::vector<RawComponent>& components
 	) {
@@ -133,7 +134,7 @@ protected:
 		int mcucnt = 0;
 		bool could_advance = false;
 		do {
-			code_mcu(data, scan_view, block_views);
+			code_mcu(data, frame, scan_view, block_views);
 			mcucnt++;
 
 			if (scan.restart_interval > 0 && mcucnt >= scan.restart_interval) {
@@ -157,24 +158,25 @@ protected:
 	// block in the MCU windows of each component.
 	static void code_mcu(
 		const CompressedJpegData& data,
+		const Frame& frame,
 		ScanView& scan_view,
 		BlockViewBundle& block_views
 	) {
+		const Scan& scan = scan_view.scan();
+
 		for (int comp = 0; comp < block_views.size(); comp++) {
 			auto& block = block_views[comp];
-
-			const ScanComponentParams& params = scan_view.scan().component_params[comp];
-			int acsel = params.ac_entropy_coding_selector;
-			int dcsel = params.dc_entropy_coding_selector;
-			int qsel = data.frames()[0].component_params[comp].qtable_selector;
-
 			scan_view.select_component(comp);
+
+			const auto& qtable = data.get_qtable(frame, scan, comp);
+			const auto& dc_huff = frame.get_huff_table(scan, comp, TableClass::dc);
+			const auto& ac_huff = frame.get_huff_table(scan, comp, TableClass::ac);
 
 			do {
 				code_block_with_diagnostic(
-					data.q_tables()[qsel],
-					data.huff_tables(TableClass::dc)[dcsel],
-					data.huff_tables(TableClass::ac)[acsel],
+					qtable,
+					dc_huff,
+					ac_huff,
 					scan_view,
 					block,
 					comp
@@ -187,18 +189,17 @@ protected:
 	// before propagating the exception
 	static void code_block_with_diagnostic(
 		const QuantizationTable& q_tbl,
-		const HuffmanTable& ac_tbl,
 		const HuffmanTable& dc_tbl,
+		const HuffmanTable& ac_tbl,
 		ScanView& scan_view,
 		BlockView& block_view,
 		unsigned int component
 	) {
-
 		try {
 			CodingPolicy::code_block(
 				q_tbl,
-				ac_tbl,
 				dc_tbl,
+				ac_tbl,
 				scan_view,
 				block_view
 			);

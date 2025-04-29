@@ -282,29 +282,30 @@ public:
 		msg::debug("ENCODE: Encoding image with quality {}, subsamp {}", quality, subsamp);
 
 		// Init quantization tables.
-		j.q_tables()[0] = generate_qtable(qtable_base_luma, quality);
-		msg::debug("ENCODE: luma qtable\n{}", std::string(j.q_tables()[0]));
+		QuantizationTable lumatable = generate_qtable(qtable_base_luma, quality);
+		msg::debug("ENCODE: luma qtable\n{}", std::string(lumatable));
 
-		j.q_tables()[1] = generate_qtable(qtable_base_chroma, quality);
-		msg::debug("ENCODE: chroma qtable\n{}", std::string(j.q_tables()[1]));
+		QuantizationTable chromatable = generate_qtable(qtable_base_chroma, quality);
+		msg::debug("ENCODE: chroma qtable\n{}", std::string(chromatable));
 
-		// Copy pre-calculated huffman tables.
-		j.huff_tables(TableClass::dc)[0] = hufftable_dc0;
-		j.huff_tables(TableClass::ac)[0] = hufftable_ac0;
-		j.huff_tables(TableClass::dc)[1] = hufftable_dc1;
-		j.huff_tables(TableClass::ac)[1] = hufftable_ac1;
+		j.q_tables().install_table(0, std::move(lumatable));
+		j.q_tables().install_table(1, std::move(chromatable));
 
 		// Set up frame
-		j.frames().emplace(j.frames().end());
-		Frame& frame = j.frames()[0];
+		Frame& frame = j.new_frame();
 		frame.num_lines = raws[0].y_pixels();
 		frame.samples_per_line = raws[0].x_pixels();
 		frame.sample_precision = 8;
 		frame.num_components = raws.size();
 
+		// Install pre-calculated huffman tables.
+		frame.dc_huff_tables().install_table(0, hufftable_dc0);
+		frame.dc_huff_tables().install_table(1, hufftable_dc1);
+		frame.ac_huff_tables().install_table(0, hufftable_ac0);
+		frame.ac_huff_tables().install_table(1, hufftable_ac1);
+
 		// Set up scan
-		frame.scans.emplace(frame.scans.end());
-		Scan& scan = frame.scans[0];
+		Scan& scan = frame.new_scan();
 		scan.num_components = raws.size();
 		scan.restart_interval = 0;
 
@@ -315,7 +316,7 @@ public:
 		add_chroma_params(frame, scan, 2);
 
 		// Encode
-		code_scan(j, scan, raws);
+		code_scan(j, frame, scan, raws);
 
 		j.set_valid();
 		return std::move(j);

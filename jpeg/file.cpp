@@ -276,7 +276,7 @@ private:
 	void read_sof_to(CompressedJpegData& j, const FrameType& i) {
 		JpegSegmentReader seg { file, std::string(i) };
 
-		Frame frame;
+		Frame& frame = j.new_frame();
 		frame.type = i;
 
 		frame.sample_precision = seg.read_byte();
@@ -302,8 +302,6 @@ private:
 		}
 
 		seg.verify();
-
-		j.frames().push_back(std::move(frame));
 	}
 
 	// Currently does nothing, just announces that we stepped over a RSTn
@@ -318,6 +316,8 @@ private:
 	void read_qtable_to(CompressedJpegData& j) {
 		JpegSegmentReader seg { file, "DQT" };
 
+		TableMap<QuantizationTable>& qtables = j.q_tables();
+
 		// No way to tell how many tables left without just tracking
 		// byte count (no table count parameter).
 		while (seg.has_bytes()) {
@@ -326,12 +326,8 @@ private:
 			verify_param_under("Tq", tq_destination, 4);
 			verify_param_under("Pq", pq_precision, 2);
 
-			QuantizationTable& qtable = j.q_tables()[tq_destination];
+			QuantizationTable qtable;
 			msg::debug("READ_JPEG: install qtable to dest {}", tq_destination);
-
-			if (qtable.set) {
-				msg::warn("READ_JPEG: replacing existing table!");
-			}
 
 			for (int i = 0; i < 64; i++) {
 				uint16_t value = 0;
@@ -348,7 +344,7 @@ private:
 				valref = value;
 			}
 
-			qtable.set = true;
+			qtables.install_table(tq_destination, std::move(qtable));
 		}
 
 		seg.verify();
@@ -367,16 +363,15 @@ private:
 			verify_param_under("Tc", tc_table_class, 2);
 
 			auto _class = TableClass(tc_table_class);
-			HuffmanTable& hufftable = j.huff_tables(_class)[th_destination];
+			auto& tablemap = j.cur_frame().huff_tables(_class);
+
+			HuffmanTable hufftable;
+
 			msg::debug(
 				"READ_JPEG: install {} hufftable to dest {}",
 				str_from_table_class.at(_class),
 				th_destination
 			);
-
-			if (hufftable.set) {
-				msg::warn("READ_JPEG: replacing existing table!");
-			}
 
 			// Read row lengths first.
 			std::vector<uint8_t> row_lengths;
@@ -404,7 +399,7 @@ private:
 
 			// Populate HUFFCODE table
 			hufftable.populate_codes();
-			hufftable.set = true;
+			tablemap.install_table(th_destination, std::move(hufftable));
 		}
 
 		seg.verify();
@@ -426,7 +421,7 @@ private:
 			throw JpegFileError("encountered SOS marker before SOF");
 		}
 
-		Scan scan;
+		Scan& scan = j.new_scan();
 		scan.restart_interval = restart_interval; // Defined earlier by DRI
 		scan.num_components = seg.read_byte();
 
@@ -457,8 +452,6 @@ private:
 		seg.verify();
 
 		read_entropy_coded_data_to(scan);
-
-		j.frames().back().scans.push_back(std::move(scan));
 	}
 
 	// Reads entropy coded data segments to the given Scan, until a non-RST
@@ -632,25 +625,26 @@ private:
 		seg.commit();
 	}
 
-	// Writes every set Huffman table in the given CompressedJpegData object
-	// to this file.
-	void write_all_hufftables(const CompressedJpegData& j, TableClass cls) {
-		auto& tbls = j.huff_tables(cls);
+	// Writes the Huffman tables introduced for a given scan (by its index
+	// in the frame, n)
+	void write_hufftables_for_scan(
+		const Frame& f,
+		unsigned int n,
+		TableClass cls
+	) {
+		auto& tbls = f.huff_tables(cls);
 
-		for (int dest = 0; dest < tbls.size(); dest++) {
-			auto& table = tbls[dest];
-			if (table.set) write_hufftable(table, dest, cls);
+		for (const auto [tbl, dest] : tbls.get_differential(n)) {
+			write_hufftable(*tbl, dest, cls);
 		}
 	}
 
-	// Writes every set quantization table in the given CompressedJpegData
-	// object to this file.
-	void write_all_qtables(const CompressedJpegData& j) {
+	// Writes the quantization tables introduced for the given frame index.
+	void write_qtables_for_frame(const CompressedJpegData& j, unsigned int n) {
 		auto& tbls = j.q_tables();
 
-		for (int dest = 0; dest < tbls.size(); dest++) {
-			auto& table = tbls[dest];
-			if (table.set) write_qtable(table, dest);
+		for (const auto [tbl, dest] : tbls.get_differential(n)) {
+			write_qtable(*tbl, dest);
 		}
 	}
 
@@ -753,6 +747,17 @@ private:
 		write_sos(s);
 		write_entropy_coded_data(s);
 	}
+
+	void write_frame(const Frame& f) {
+		write_sof(f);
+
+		for (unsigned int n = 0; n < f.scans.size(); n++) {
+			write_hufftables_for_scan(f, n, TableClass::dc);
+			write_hufftables_for_scan(f, n, TableClass::ac);
+
+			write_scan(f.scans[n]);
+		}
+	}
 public:
 	JpegFile(std::string path, std::ios_base::openmode mode) {
 		msg::debug("FILE_JPEG: try open \"{}\"...", path);
@@ -813,13 +818,11 @@ public:
 
 		write_marker(MarkerSpecial::soi_start_of_img);
 		write_jfif_header(j);
-		write_all_qtables(j);
-		write_sof(j.frames()[0]);
-		write_all_hufftables(j, TableClass::dc);
-		write_all_hufftables(j, TableClass::ac);
 
-		// TODO: for now only support one scan
-		write_scan(j.frames()[0].scans[0]);
+		for (unsigned int n = 0; n < j.frames().size(); n++) {
+			write_qtables_for_frame(j, n);
+			write_frame(j.frames()[n]);
+		}
 
 		write_marker(MarkerSpecial::eoi_end_of_img);
 	}

@@ -275,7 +275,10 @@ class JpegDecoder : CodingBase<DecodePolicy, ScanDecodeView> {
 private:
 	// Decodes a single JPEG frame. CompressedJpegData is passed as well
 	// for access to the tables needed for decoding.
-	std::vector<RawComponent> decode_frame(const CompressedJpegData& data, const Frame& frame) {
+	std::vector<RawComponent> decode_frame(
+		const CompressedJpegData& data,
+		const Frame& frame
+	) {
 		std::vector<RawComponent> components;
 
 		int hmax = frame.h_max();
@@ -312,7 +315,7 @@ private:
 				"DECODE: scan {}: RSTi={}",
 				cnt, scan.restart_interval
 			);
-			code_scan(data, scan, components);
+			code_scan(data, frame, scan, components);
 			cnt++;
 		}
 
