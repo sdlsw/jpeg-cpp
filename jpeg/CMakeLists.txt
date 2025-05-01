@@ -12,6 +12,7 @@ target_sources(
         tables.cpp
         decode.cpp
         encode.cpp
-        file.cpp
+        file_bmp.cpp
+        file_jpeg.cpp
         codingbase.cpp
 )
