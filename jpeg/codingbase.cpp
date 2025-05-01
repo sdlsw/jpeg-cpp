@@ -5,8 +5,8 @@ module jpeg:codingbase;
 
 import std;
 import msg;
-
-import :data;
+import :data.jpeg;
+import :data.image;
 
 namespace jpeg {
 // Concept describing a coding policy.

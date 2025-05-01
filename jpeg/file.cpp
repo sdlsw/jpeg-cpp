@@ -5,6 +5,8 @@ export module jpeg:file;
 
 import std;
 import msg;
+import :data.image;
+import :data.jpeg;
 
 using std::uint8_t;
 using std::int8_t;
@@ -12,8 +14,6 @@ using std::uint16_t;
 using std::int16_t;
 using std::uint32_t;
 using std::int32_t;
-
-import :data;
 
 export namespace jpeg {
 // Used to indicate failure to process a JPEG file.

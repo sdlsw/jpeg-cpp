@@ -5,7 +5,10 @@ target_sources(
     PRIVATE
     FILE_SET jpeg TYPE CXX_MODULES FILES
         jpeg.cpp
-        data.cpp
+        data_image.cpp
+        data_jpeg.cpp
+        data_matrix.cpp
+        data_tables.cpp
         tables.cpp
         decode.cpp
         encode.cpp

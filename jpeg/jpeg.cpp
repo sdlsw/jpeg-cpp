@@ -3,9 +3,8 @@
 // public interface.
 
 export module jpeg;
-export import :data;
+export import :data.jpeg;
 export import :decode;
 export import :encode;
 export import :file;
-export import :tables;
 

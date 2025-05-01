@@ -5,9 +5,9 @@ export module jpeg:decode;
 
 import std;
 import msg;
-
 import :codingbase;
-import :data;
+import :data.image;
+import :data.jpeg;
 
 using std::uint8_t;
 using std::int8_t;

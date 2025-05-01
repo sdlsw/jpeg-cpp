@@ -7,7 +7,8 @@ import std;
 import msg;
 
 import :codingbase;
-import :data;
+import :data.jpeg;
+import :data.image;
 import :tables;
 
 using std::uint8_t;
