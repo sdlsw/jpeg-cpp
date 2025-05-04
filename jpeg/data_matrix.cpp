@@ -1,6 +1,7 @@
 export module jpeg:data.matrix;
 
 import std;
+import :concepts;
 using std::uint8_t;
 
 // data_matrix.cpp:
@@ -32,9 +33,6 @@ constexpr auto generate_order_inverse(const std::array<uint8_t, 64>& order) {
 
 const std::array<uint8_t, 64> row_order_from_zigzag_order = generate_order_inverse(zigzag_order_from_row_order);
 const unsigned int str_float_precision = 5;
-
-template<typename T>
-concept arithmetic = std::integral<T> or std::floating_point<T>;
 
 export namespace jpeg {
 template<arithmetic T, size_t W=8, size_t H=8>
