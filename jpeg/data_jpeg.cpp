@@ -479,6 +479,16 @@ struct FrameComponentParams {
 	// Sets the quantization table to use for this component.
 	uint8_t qtable_selector = 0;
 
+	// Shortcut functions for access
+	auto h() const { return horizontal_sampling_factor; }
+	auto v() const { return vertical_sampling_factor; }
+
+	// The area (number of blocks) of an MCU region for this component
+	// in interleaved scans.
+	unsigned int interleave_area() const {
+		return horizontal_sampling_factor * vertical_sampling_factor;
+	}
+
 	explicit operator std::string() const {
 		return std::format(
 			"ID={} | H={} | V={} | QTABLE={}",
@@ -585,45 +595,45 @@ struct Frame {
 		return huff_tables(cls).get(scan.index, selector);
 	}
 
-	// Determines the maximum horizontal sampling factor across all
-	// components.
-	int h_max() const {
-		int max = 0;
-
-		for (const auto& params : component_params) {
-			if (params.horizontal_sampling_factor > max) {
-				max = params.horizontal_sampling_factor;
-			}
-		}
-
-		return max;
+	template<typename BinaryOp>
+	unsigned int accumulate_component_params(BinaryOp op) const {
+		return std::accumulate(
+			component_params.begin(),
+			component_params.end(),
+			0,
+			op
+		);
 	}
 
-	// Determines the maximum vertical sampling factor across all
+	// Finds the maximum of a particular field among this frame's component
+	// params.
+	template<typename AccessOp>
+	unsigned int max_component_param(AccessOp op) const {
+		auto acc_op = [&op](unsigned int acc, const FrameComponentParams& p) {
+			return std::max((unsigned int) (p.*op)(), acc);
+		};
+		return accumulate_component_params(acc_op);
+	}
+
+	// Determines the maximum horizontal sampling factor across all
 	// components.
-	int v_max() const {
-		int max = 0;
+	unsigned int h_max() const {
+		return max_component_param(&FrameComponentParams::h);
+	}
 
-		for (const auto& params : component_params) {
-			if (params.vertical_sampling_factor > max) {
-				max = params.vertical_sampling_factor;
-			}
-		}
-
-		return max;
+	// Determines the maximum vertical sampling factor accross all
+	// components.
+	unsigned int v_max() const {
+		return max_component_param(&FrameComponentParams::v);
 	}
 
 	// Determines the length in blocks of one MCU containing data from
 	// every component.
 	int mcu_length() const {
-		int out = 0;
-
-		for (const auto& params : component_params) {
-			out += params.vertical_sampling_factor *
-				params.horizontal_sampling_factor;
-		}
-
-		return out;
+		auto op = [](unsigned int acc, const FrameComponentParams& p) {
+			return acc + p.interleave_area();
+		};
+		return accumulate_component_params(op);
 	}
 
 	explicit operator std::string() const {
