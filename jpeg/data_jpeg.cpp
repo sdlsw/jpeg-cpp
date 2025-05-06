@@ -468,6 +468,9 @@ struct FrameComponentParams {
 	// each scan contains.
 	uint8_t identifier = 0;
 
+	// The component index for these params.
+	unsigned int index;
+
 	// Horizontal size of a block chunk to be contained in one MCU.
 	// Also determines size of this component relative to others.
 	uint8_t horizontal_sampling_factor = 0;
@@ -548,6 +551,14 @@ struct Frame {
 		s.index = scans.size() - 1;
 
 		return s;
+	}
+
+	// Adds a new component to this frame.
+	FrameComponentParams& new_component() {
+		component_params.emplace(component_params.end());
+		FrameComponentParams& p = component_params.back();
+		p.index = component_params.size() - 1;
+		return p;
 	}
 
 	// Gets a set of FrameComponentParams by searching for its component ID.

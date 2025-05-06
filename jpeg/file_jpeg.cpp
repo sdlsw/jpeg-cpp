@@ -283,7 +283,7 @@ private:
 		frame.num_components = seg.read_byte();
 
 		for (int comp = 0; comp < frame.num_components; comp++) {
-			FrameComponentParams params;
+			FrameComponentParams& params = frame.new_component();
 
 			params.identifier = seg.read_byte();
 
@@ -295,8 +295,6 @@ private:
 			verify_param_under("(Vi-1)", v - 1, 4);
 
 			params.qtable_selector = seg.read_byte();
-
-			frame.component_params.push_back(params);
 		}
 
 		seg.verify();
