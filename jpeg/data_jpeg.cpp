@@ -696,6 +696,7 @@ struct Frame {
 class CompressedJpegData {
 private:
 	bool valid = false;
+	bool deferred_qtables = false;
 	std::string _source_file {""};
 
 	TableMap<QuantizationTable> _q_tables;
@@ -730,7 +731,19 @@ public:
 	// Creates a new frame in this JPEG.
 	Frame& new_frame() {
 		_frames.emplace(_frames.end());
-		_q_tables.save_dest();
+
+		// HACK: Ugly, but sometimes JPEGs will define their
+		// quantization tables after SOF. This is legal; the tables
+		// just need to be defined by the time the first scan occurs.
+		//
+		// To deal with this, if we define a new frame before there
+		// are any quantization tables defined, defer until the first
+		// scan of the frame.
+		if (_q_tables.any_defined_in_dest()) {
+			_q_tables.save_dest();
+		} else {
+			deferred_qtables = true;
+		}
 
 		Frame& f = _frames.back();
 		f.index = _frames.size() - 1;
@@ -747,8 +760,14 @@ public:
 		return _frames.back();
 	}
 
-	// Convenience function. Creates new scan in current frame.
+	// Creates new scan in current frame.
 	Scan& new_scan() {
+		// HACK: See new_frame().
+		if (deferred_qtables) {
+			_q_tables.save_dest();
+			deferred_qtables = false;
+		}
+
 		return cur_frame().new_scan();
 	}
 

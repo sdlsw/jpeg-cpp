@@ -112,6 +112,15 @@ public:
 		return v;
 	}
 
+	// Checks if this TableMap has any tables defined in table_dest.
+	bool any_defined_in_dest() {
+		for (const auto& v : table_dest) {
+			if (v != -1) return true;
+		}
+
+		return false;
+	}
+
 	// Saves the current state of table_dest.
 	void save_dest() {
 		table_dest_history.push_back(table_dest);
