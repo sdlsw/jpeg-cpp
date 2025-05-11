@@ -223,16 +223,13 @@ public:
 	static inline const std::string phase_name = "DECODE";
 
 	static void code_block(
-		const QuantizationTable& q_tbl,
 		const HuffmanTable& dc_tbl,
 		const HuffmanTable& ac_tbl,
 		ScanDecodeView& scan_view,
-		BlockView& block_view
+		BlockView<ComponentBuffer>& block_view
 	) {
-		Matrix<int16_t, 8, 8> tmp_block;
-
-		// Read block into temp space
-		tmp_block[0, 0] = scan_view.decode_dc_coeff(dc_tbl);
+		auto& dcval = block_view.zz(0);
+		dcval = scan_view.decode_dc_coeff(dc_tbl);
 
 		int zz = 1;
 		while (zz <= 63) {
@@ -245,23 +242,9 @@ public:
 			zz += ac.r;
 			if (zz >= 64) break;
 
-			auto& valref = tmp_block.zz(zz);
+			auto& valref = block_view.zz(zz);
 			valref = ac.value;
 			zz++;
-		}
-
-		// Undo quantization, then IDCT
-		auto detransform = dct_mat * (tmp_block.ptwise_mul(q_tbl.data)) * dct_mat_t;
-
-		// Level shift and write to component
-		for (size_t y = 0; y < 8; y++) {
-			for (size_t x = 0; x < 8; x++) {
-				double level = detransform[x, y] + 128;
-				if (level < 0) level = 0;
-				if (level > 255) level = 255;
-
-				block_view[x, y] = (uint8_t) level;
-			}
 		}
 	}
 
@@ -275,58 +258,60 @@ class JpegDecoder : CodingBase<DecodePolicy, ScanDecodeView> {
 private:
 	// Decodes a single JPEG frame. CompressedJpegData is passed as well
 	// for access to the tables needed for decoding.
-	std::vector<RawComponent> decode_frame(
+	ImageBuffer decode_frame(
 		const CompressedJpegData& data,
 		const Frame& frame
 	) {
-		std::vector<RawComponent> components;
-
 		int hmax = frame.h_max();
 		int vmax = frame.v_max();
 
 		msg::debug(
-			"DECODE: start frame: hmax={} vmax={} mculength={}",
-			hmax, vmax, frame.mcu_length()
+			"DECODE: start frame: hmax={} vmax={}",
+			hmax, vmax
 		);
 
-		msg::debug("DECODE: init raw components...");
-		int cnt = 0;
+		msg::debug("DECODE: init DCT buffers...");
+
+		ImageBuffer buf { SampleFormat::DctCoeff };
 		for (const auto& comp_info : frame.component_params) {
-			float h_ratio = ((float) comp_info.horizontal_sampling_factor) / hmax;
-			float v_ratio = ((float) comp_info.vertical_sampling_factor) / vmax;
+			float h_ratio = ((float) comp_info.h()) / hmax;
+			float v_ratio = ((float) comp_info.v()) / vmax;
 
-			RawComponent comp = RawComponent(
-				std::ceil(frame.samples_per_line * h_ratio),
-				std::ceil(frame.num_lines * v_ratio),
-				comp_info.horizontal_sampling_factor,
-				comp_info.vertical_sampling_factor,
-				0
+			Dimensions d {
+				static_cast<size_t>(std::ceil(frame.samples_per_line * h_ratio)),
+				static_cast<size_t>(std::ceil(frame.num_lines * v_ratio))
+			};
+
+			const auto& comp = buf.new_component(d);
+
+			msg::debug(
+				"DECODE: comp{}: {}",
+				buf.num_components() - 1,
+				std::string(comp)
 			);
-
-			msg::debug("DECODE: comp{}: {}", cnt, std::string(comp));
-
-			components.push_back(std::move(comp));
-			cnt++;
 		}
 
-		cnt = 0;
+		msg::debug("DECODE: decode_frame: Decode scans...");
+		int cnt = 0;
 		for (const auto& scan : frame.scans) {
 			msg::debug(
 				"DECODE: scan {}: RSTi={}",
 				cnt, scan.restart_interval
 			);
-			code_scan(data, frame, scan, components);
+			code_scan(data, frame, scan, buf);
 			cnt++;
 		}
 
+		msg::debug("DECODE: decode_frame: IDCT...");
+		buf.idct(data.get_qtables(frame));
 		msg::debug("DECODE: decode_frame: done");
 
-		return std::move(components);
+		return std::move(buf);
 	}
 
 public:
 	// Decompress the data contained in a JPEG object.
-	std::vector<RawComponent> decode(const CompressedJpegData& data) {
+	ImageBuffer decode(const CompressedJpegData& data) {
 		msg::info("Decoding compressed data");
 
 		if (data.frames().size() == 0) {

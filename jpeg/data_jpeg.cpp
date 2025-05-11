@@ -573,6 +573,16 @@ struct Frame {
 		));
 	}
 
+	// Gets a set of FrameComponentParams referred to by a component in a
+	// scan.
+	const FrameComponentParams& get_component_params_by_scan(
+		const Scan& scan,
+		uint8_t comp
+	) const {
+		auto comp_id = scan.comp_params(comp).component_selector;
+		return get_component_params_by_id(comp_id);
+	}
+
 	template <typename Self>
 	auto& ac_huff_tables(this Self& self) { return self._ac_huff_tables; }
 
@@ -749,10 +759,21 @@ public:
 		const Scan& scan,
 		unsigned int comp_index
 	) const {
-		auto comp_id = scan.comp_params(comp_index).component_selector;
-		auto qsel = frame.get_component_params_by_id(comp_id).qtable_selector;
+		auto params = frame.get_component_params_by_scan(scan, comp_index);
+		return _q_tables.get(frame.index, params.qtable_selector);
+	}
 
-		return _q_tables.get(frame.index, qsel);
+	// Obtains a vector of pointers to each QuantizationTable specified
+	// in each component of the given frame (by index)
+	auto get_qtables(const Frame& frame) const {
+		std::vector<const QuantizationTable*> v;
+
+		for (const auto& params : frame.component_params) {
+			const auto& tbl = _q_tables.get(frame.index, params.qtable_selector);
+			v.push_back(&tbl);
+		}
+
+		return v;
 	}
 
 	explicit operator std::string() const {

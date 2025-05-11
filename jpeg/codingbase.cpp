@@ -12,16 +12,15 @@ namespace jpeg {
 // Concept describing a coding policy.
 template<typename T, typename ScanView>
 concept is_coding_policy = requires(
-	const QuantizationTable& q_tbl,
 	const HuffmanTable& dc_tbl,
 	const HuffmanTable& ac_tbl,
 	ScanView& scan_view,
-	BlockView& block_view
+	BlockView<ComponentBuffer>& block_view
 ) {
 	// En/decodes a block using the provided tables.
 	// Encode processes will read from block_view and write to scan_view,
 	// decode processes will read from scan_view and write to block_view.
-	T::code_block(q_tbl, dc_tbl, ac_tbl, scan_view, block_view);
+	T::code_block(dc_tbl, ac_tbl, scan_view, block_view);
 
 	// The name for the phase, to be used in debug messages and exceptions.
 	// Should be all caps, something like "ENCODE" or "DECODE".
@@ -62,19 +61,37 @@ public:
 	}
 };
 
-// Helper class consisting of a collection of BlockViews into a collection
-// of components.
+// Helper class consisting of a collection of BlockViews into the various
+// components of an image buffer.
 class BlockViewBundle {
 private:
-	std::vector<BlockView> block_views;
+	std::vector<BlockView<ComponentBuffer>> block_views;
 public:
-	BlockViewBundle(std::vector<RawComponent>& components) {
-		for (auto& comp : components) {
-			block_views.push_back(BlockView(comp));
+	BlockViewBundle(const Frame& frame, const Scan& scan, ImageBuffer& buf) {
+		// Bundles are created based on a JPEG scan. Some scans won't
+		// contain data for all components in the frame, so only create
+		// BlockViews for the ones that are actually present in the
+		// scan.
+		for (unsigned int comp = 0; comp < scan.num_components; comp++) {
+			const auto& params = frame.get_component_params_by_scan(scan, comp);
+			auto& comp_buf = buf[params.index];
+
+			Dimensions d;
+
+			// In one-component scans, MCU is always 1x1.
+			if (scan.num_components == 1) {
+				d.x = 1;
+				d.y = 1;
+			} else {
+				d.x = params.h();
+				d.y = params.v();
+			}
+
+			block_views.emplace(block_views.end(), comp_buf, d);
 		}
 	}
 
-	BlockView& operator[](size_t n) {
+	BlockView<ComponentBuffer>& operator[](size_t n) {
 		return block_views[n];
 	}
 
@@ -122,11 +139,11 @@ protected:
 		const CompressedJpegData& data,
 		const Frame& frame,
 		ScanType& scan,
-		std::vector<RawComponent>& components
+		ImageBuffer& buf
 	) {
 		msg::debug("{}: code_scan: init data views", CodingPolicy::phase_name);
-		auto scan_view = ScanView(scan);
-		auto block_views = BlockViewBundle(components);
+		ScanView scan_view { scan };
+		BlockViewBundle block_views { frame, scan, buf };
 
 		msg::debug("{}: code_scan: begin coding process", CodingPolicy::phase_name);
 
@@ -168,13 +185,11 @@ protected:
 			auto& block = block_views[comp];
 			scan_view.select_component(comp);
 
-			const auto& qtable = data.get_qtable(frame, scan, comp);
 			const auto& dc_huff = frame.get_huff_table(scan, comp, TableClass::dc);
 			const auto& ac_huff = frame.get_huff_table(scan, comp, TableClass::ac);
 
 			do {
 				code_block_with_diagnostic(
-					qtable,
 					dc_huff,
 					ac_huff,
 					scan_view,
@@ -188,16 +203,14 @@ protected:
 	// en/decodes a block, but prints some debug information on failure
 	// before propagating the exception
 	static void code_block_with_diagnostic(
-		const QuantizationTable& q_tbl,
 		const HuffmanTable& dc_tbl,
 		const HuffmanTable& ac_tbl,
 		ScanView& scan_view,
-		BlockView& block_view,
+		BlockView<ComponentBuffer>& block_view,
 		unsigned int component
 	) {
 		try {
 			CodingPolicy::code_block(
-				q_tbl,
 				dc_tbl,
 				ac_tbl,
 				scan_view,

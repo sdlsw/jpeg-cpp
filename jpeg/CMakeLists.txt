@@ -10,6 +10,7 @@ target_sources(
         data_jpeg.cpp
         data_matrix.cpp
         data_tables.cpp
+        data_vector.cpp
         tables.cpp
         decode.cpp
         encode.cpp

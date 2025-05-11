@@ -2,14 +2,21 @@ export module jpeg:data.matrix;
 
 import std;
 import :concepts;
+
 using std::uint8_t;
 
 // data_matrix.cpp:
 // Defines the matrix structure used for DCT transforms.
 
+const unsigned int str_float_precision = 5;
+
+export namespace jpeg {
+constexpr unsigned int block_size = 8;
+constexpr unsigned int block_area = block_size*block_size;
+
 // For JPEG, we only encounter 8x8 blocks for DCT/quantization/etc.
 // The standard document offers a table, so just hardcode it.
-const std::array<uint8_t, 64> zigzag_order_from_row_order = {
+constexpr std::array<uint8_t, block_area> zz_order_from_row_order {
 	0,   1,  5,  6, 14, 15, 27, 28,
 	2,   4,  7, 13, 16, 26, 29, 42,
 	3,   8, 12, 17, 25, 30, 41, 43,
@@ -20,22 +27,19 @@ const std::array<uint8_t, 64> zigzag_order_from_row_order = {
 	35, 36, 48, 49, 57, 58, 62, 63
 };
 
-// However, we can use the hardcoded table to generate the inverse one:
-constexpr auto generate_order_inverse(const std::array<uint8_t, 64>& order) {
-	std::array<uint8_t, 64> inverse;
+constexpr auto invert_array(const std::array<uint8_t, block_area>& a) {
+	std::array<uint8_t, block_area> out;
 
-	for (int i = 0; i < order.size(); i++) {
-		inverse[order[i]] = i;
+	for (size_t i = 0; i < out.size(); i++) {
+		out[a[i]] = i;
 	}
 
-	return std::move(inverse);
+	return out;
 }
 
-const std::array<uint8_t, 64> row_order_from_zigzag_order = generate_order_inverse(zigzag_order_from_row_order);
-const unsigned int str_float_precision = 5;
+constexpr auto row_order_from_zz_order = invert_array(zz_order_from_row_order);
 
-export namespace jpeg {
-template<arithmetic T, size_t W=8, size_t H=8>
+template<arithmetic T, size_t W=block_size, size_t H=block_size>
 class Matrix {
 	// Every instance of Matrix must be friends with every other instance.
 	template <arithmetic OTHER_T, size_t OTHER_W, size_t OTHER_H>
@@ -67,7 +71,10 @@ private:
 
 		RESULT_T sum = 0;
 		for (int i = 0; i < W; i++) {
-			sum += other.data[other_cursor] * data[self_cursor];
+			sum += (
+				static_cast<RESULT_T>(other.data[other_cursor]) * 
+				static_cast<RESULT_T>(data[self_cursor])
+			);
 			self_cursor++;
 			other_cursor += W;
 		}
@@ -81,7 +88,8 @@ public:
 	static const size_t height = H;
 
 	Matrix() = default;
-	Matrix(const std::initializer_list<T>& ilist) {
+
+	constexpr Matrix(const std::initializer_list<T>& ilist) {
 		if (ilist.size() != data.size()) {
 			auto s = std::format(
 				"Matrix: bad initializer list size {} (expected {})",
@@ -97,18 +105,42 @@ public:
 		}
 	}
 
-	decltype(auto) operator[](this auto& self, size_t x, size_t y) {
+	constexpr Matrix(const std::array<T, W*H>& a) {
+		for (std::tuple<T&, const T&> t : std::views::zip(*this, a)) {
+			std::get<0>(t) = std::get<1>(t);
+		}
+	}
+
+	template<arithmetic OTHER_T>
+	constexpr Matrix(const Matrix<OTHER_T, W, H>& other) {
+		for (std::tuple<T&, const OTHER_T&> t : std::views::zip(*this, other)) {
+			std::get<0>(t) = static_cast<T>(std::get<1>(t));
+		}
+	}
+
+	constexpr auto begin() { return data.begin(); }
+	constexpr auto end() { return data.end(); }
+
+	constexpr auto begin() const { return data.cbegin(); }
+	constexpr auto end() const { return data.cend(); }
+
+	auto& operator[](this auto& self, size_t x, size_t y) {
 		self.bounds_check(x, y);
 		return self.data[y*W + x];
 	}
 
-	// Shortcut access 'operator' for zig-zag ordering. Used only for 8x8
-	// matrices.
-	decltype(auto) zz(this auto& self, size_t z) {
-		if (W != 8 || H != 8) throw std::runtime_error("zz only valid on 8x8 matrix");
-		if (z >= 64) throw std::out_of_range("zz: out of range");
+	// Accesses this matrix in zig-zag order. Only works for 8x8 matrices,
+	// which is the size of a JPEG block.
+	auto& zz(this auto& self, size_t zz) {
+		if (H != block_size || W != block_size) {
+			throw std::runtime_error("zz() only for 8x8 matrices");
+		}
 
-		return self.data[row_order_from_zigzag_order[z]];
+		if (zz >= block_area) {
+			throw std::invalid_argument("zz(): index cannot exceed 64");
+		}
+
+		return self.data[row_order_from_zz_order[zz]];
 	}
 
 	// Typical matrix multiplication. By default the number type of the
@@ -128,8 +160,26 @@ public:
 		return std::move(result);
 	}
 
+	// Scalar matrix multiplication.
+	Matrix<T, W, H> operator*=(T c) {
+		for (auto& v : data) v *= c;
+		return *this;
+	}
+
+	// Scalar addition. Adds c to every element of this matrix.
+	Matrix<T, W, H>& operator+=(T c) {
+		for (auto& v : data) v += c;
+		return *this;
+	}
+
+	// Scalar subtraction. Subtracts c from every element of this matrix.
+	Matrix<T, W, H>& operator-=(T c) {
+		for (auto& v : data) v -= c;
+		return *this;
+	}
+
 	// Creates a transposed copy of this matrix.
-	Matrix<T, H, W> transpose() const {
+	Matrix<T, H, W> transposed() const {
 		Matrix<T, H, W> result;
 
 		for (size_t x = 0; x < W; x++) {
@@ -141,65 +191,62 @@ public:
 		return std::move(result);
 	}
 
+	template<arithmetic OTHER_T, typename ApplyOp>
+	void ptwise_apply_inplace(
+		const Matrix<OTHER_T, W, H>& other,
+		ApplyOp op
+	) {
+		for (auto t : std::views::zip(*this, other)) {
+			auto& a = std::get<0>(t);
+			auto& b = std::get<1>(t);
+
+			a = op(a, b);
+		}
+	}
+
 	// Multiplies each point in this matrix by the corresponding point
 	// in another of the same size.
-	template<arithmetic RESULT_T=T, arithmetic OTHER_T>
-	Matrix<RESULT_T, W, H> ptwise_mul(const Matrix<OTHER_T, W, H>& other) const {
-		Matrix<RESULT_T, W, H> result;
-
-		for (size_t i = 0; i < data.size(); i++) {
-			result.data[i] = this->data[i] * other.data[i];
-		}
-
-		return std::move(result);
+	template<arithmetic OTHER_T>
+	void ptwise_mul_inplace(const Matrix<OTHER_T, W, H>& other) {
+		ptwise_apply_inplace(other, [](T a, OTHER_T b) {
+			return a * static_cast<T>(b);
+		});
 	}
 
 	// Same as ptwise_mul, but for division.
-	template<arithmetic RESULT_T=T, arithmetic OTHER_T>
-	Matrix<RESULT_T, W, H> ptwise_div(const Matrix<OTHER_T, W, H>& other) const {
-		Matrix<RESULT_T, W, H> result;
+	template<arithmetic OTHER_T>
+	void ptwise_div_inplace(const Matrix<OTHER_T, W, H>& other) {
+		ptwise_apply_inplace(other, [](T a, OTHER_T b) {
+			return a / static_cast<T>(b);
+		});
+	}
 
-		for (size_t i = 0; i < data.size(); i++) {
-			result.data[i] = this->data[i] / other.data[i];
+	// Forces every value in this matrix to be between `low` and `high`,
+	// inclusive.
+	void clamp(T low, T high) {
+		for (auto& v : data) {
+			if (v < low) {
+				v = low;
+			} else if (v > high) {
+				v = high;
+			}
 		}
-
-		return std::move(result);
 	}
 
 	// Creates a clamped copy of this matrix, forcing every value `v`
 	// to satisfy (low <= v <= high).
-	Matrix<T, W, H> clamp(T low, T high) const {
-		Matrix<T, W, H> result;
-
-		for (size_t i = 0; i < data.size(); i++) {
-			T v = this->data[i];
-			if (v < low) v = low;
-			if (v > high) v = high;
-			result.data[i] = v;
-		}
-
-		return std::move(result);
-	}
-
-	// Multiplies every value in this matrix by a single number.
-	template<arithmetic RESULT_T=T, arithmetic OTHER_T>
-	Matrix<RESULT_T, W, H> scalar_mul(OTHER_T m) const {
-		Matrix<RESULT_T, W, H> result;
-
-		for (size_t i = 0; i < data.size(); i++) {
-			result.data[i] = this->data[i] * m;
-		}
-
-		return std::move(result);
+	Matrix<T, W, H> clamped(T low, T high) const {
+		Matrix<T, W, H> result = *this;
+		result.clamp(low, high);
+		return result;
 	}
 
 	// Determines the maximum value in this matrix.
 	T max() const {
 		T m = 0;
-		for (size_t i = 0; i < data.size(); i++) {
-			if (m < data[i]) m = data[i];
+		for (const auto& v : data) {
+			if (v > m) m = v;
 		}
-
 		return m;
 	}
 
@@ -254,7 +301,7 @@ public:
 // Calculates the DCT (discrete cosine transform) matrix. Used in the encoding
 // and decoding processes.
 auto calc_dct_mat() {
-	Matrix<double, 8, 8> mat;
+	Matrix<double> mat;
 
 	double rt2 = std::sqrt(2);
 	for (size_t y = 0; y < mat.height; y++) {
@@ -270,7 +317,7 @@ auto calc_dct_mat() {
 }
 
 // Matrices used for the DCT transform.
-const Matrix<double, 8, 8> dct_mat = calc_dct_mat();
-const Matrix<double, 8, 8> dct_mat_t = dct_mat.transpose();
+const Matrix<double> dct_mat = calc_dct_mat();
+const Matrix<double> dct_mat_t = dct_mat.transposed();
 
 }

@@ -421,7 +421,9 @@ QuantizationTable generate_qtable(const QuantizationTable& base, unsigned int qu
 	double qfactor = quality_factor(quality);
 	msg::debug("TABLE: generate_qtable: quality={}, qfactor={}", quality, qfactor);
 
-	auto table_mat = base.data.scalar_mul(qfactor).clamp(1, 1000);
+	Matrix<double> table_mat { base.data };
+	table_mat *= qfactor;
+	table_mat.clamp(1, 1000);
 
 	return QuantizationTable(table_mat);
 }

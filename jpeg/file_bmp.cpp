@@ -436,12 +436,12 @@ public:
 	}
 
 	// Reads this BMP file with some degree of chroma subsampling.
-	std::vector<RawComponent> read(uint8_t subsamp=2) {
+	ImageBuffer read(uint8_t subsamp=2) {
 		if (!is_read_mode()) throw BmpFileError("BmpFile: cannot read() in write mode");
 
 		msg::debug("READ_BMP: reading BMP file and converting to YCbCr...");
 
-		std::vector<RawComponent> raws;
+		ImageBuffer buf { SampleFormat::Sample8 };
 
 		auto file_header = read_generic<BmpFileHeader>();
 		auto t = file_header._type;
@@ -464,23 +464,21 @@ public:
 		msg::debug("READ_BMP: checks pass, init components...");
 
 		// Luma component.
-		raws.push_back(std::move(RawComponent(
+		buf.new_component(Dimensions(
 			image_header._width,
-			std::abs(image_header._height),
-			subsamp, subsamp
-		)));
+			std::abs(image_header._height)
+		));
 
 		// Cr, Cb
 		for (int i = 0; i < 2; i++) {
-			raws.push_back(std::move(RawComponent(
+			buf.new_component(Dimensions(
 				image_header._width / subsamp,
-				std::abs(image_header._height) / subsamp,
-				1, 1
-			)));
+				std::abs(image_header._height) / subsamp
+			));
 		}
 
 		for (int j = 0; j < 3; j++) {
-			msg::debug("READ_BMP: comp {}: {}", j, std::string(raws[j]));
+			msg::debug("READ_BMP: comp {}: {}", j, std::string(buf[j]));
 		}
 
 		// Subsampling plus the rows potentially being in reverse order
@@ -501,38 +499,37 @@ public:
 			for (int y = 0; y < subsamp; y++) {
 				for (int luma_x = 0; luma_x < image_header._width; luma_x++) {
 					uint8_t s = window.sample(luma_x, y, 0);
-					raws[0][luma_x, y + ymap] = s;
+					buf[0][luma_x, y + ymap] = s;
 				}
 			}
 
 			for (int comp = 1; comp < 3; comp++) {
 				for (int color_x = 0; color_x < image_header._width / subsamp; color_x++) {
 					uint8_t s = window.sample(color_x, 0, comp);
-					raws[comp][color_x, ymap_color] = s;
+					buf[comp][color_x, ymap_color] = s;
 				}
 			}
 		}
 
 		msg::debug("READ_BMP: done.");
-		return std::move(raws);
+		return std::move(buf);
 	}
 
 	// Writes the result of a JPEG decode. The components are assumed to
 	// be YCbCr, possibly with some degree of chroma subsampling.
 	// This will be converted to RGB during the writing process.
-	void write(std::vector<RawComponent> components) {
+	void write(ImageBuffer buf) {
 		if (!is_write_mode()) throw BmpFileError("BmpFile: cannot write() in read mode");
 
 		msg::debug("WRITE_BMP: converting to RGB and writing BMP file...");
 
-		uint32_t width = components[0].x_pixels();
-		uint32_t height = components[0].y_pixels();
-		uint8_t padding_bytes = calc_bmp_padding_bytes(width);
+		const auto& img_size = buf[0].valid_size();
+		uint8_t padding_bytes = calc_bmp_padding_bytes(img_size.width());
 
 		uint32_t file_size = (
 			sizeof(BmpFileHeader)
 			+ sizeof(BmpImageHeader)
-			+ (width * 3 + padding_bytes) * height
+			+ (img_size.width() * 3 + padding_bytes) * img_size.height()
 		);
 
 		msg::debug(
@@ -543,28 +540,28 @@ public:
 		write_file_header(file_size);
 		// height is given as a negative number so the rows are
 		// ordered top-to-bottom.
-		write_image_header(width, -(int32_t)height);
+		write_image_header(
+			img_size.width(),
+			-(int32_t)img_size.height()
+		);
 
-		uint8_t cb_subsamp_x = components[0].mcu_width() / components[2].mcu_width();
-		uint8_t cb_subsamp_y = components[0].mcu_height() / components[2].mcu_height();
-		uint8_t cr_subsamp_x = components[0].mcu_width() / components[1].mcu_width();
-		uint8_t cr_subsamp_y = components[0].mcu_height() / components[1].mcu_height();
+		auto cb_subsamp = buf.subsamp(2);
+		auto cr_subsamp = buf.subsamp(1);
 
-
-		for (uint32_t y = 0; y < height; y++) {
-			for (uint32_t x = 0; x < width; x++) {
-				double luma = components[0][x, y];
+		for (uint32_t y = 0; y < img_size.height(); y++) {
+			for (uint32_t x = 0; x < img_size.width(); x++) {
+				double luma = buf[0][x, y];
 
 				// NOTE: This works, but it is the opposite of
 				// what the JFIF standard says... component[1]
 				// should be Cb, not Cr.
-				double cb = components[2][
-					x / cb_subsamp_x,
-					y / cb_subsamp_y
+				double cb = buf[2][
+					x / cb_subsamp.x,
+					y / cb_subsamp.y
 				];
-				double cr = components[1][
-					x / cr_subsamp_x,
-					y / cr_subsamp_y
+				double cr = buf[1][
+					x / cr_subsamp.x,
+					y / cr_subsamp.y
 				];
 
 				double r = luma + 1.402 * (cr - 128.0);
