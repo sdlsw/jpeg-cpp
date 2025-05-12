@@ -102,16 +102,16 @@ struct YCbCrPixel {
 
 // Given some dimension or other value v, calculate how much we need to add to
 // v to reach the first integer multiple of d greater than or equal to v.
-uint32_t calc_pad(uint32_t v, uint32_t d) {
-	uint32_t pad = d - v%d;
+size_t calc_pad(size_t v, size_t d) {
+	size_t pad = d - v%d;
 	if (pad == d) pad = 0;
 	return pad;
 }
 
 // Calculates the number of padding bytes to use per row in a BMP file, given
 // the width of the rows in pixels.
-uint8_t calc_bmp_padding_bytes(uint32_t width) {
-	return calc_pad(width*3, 4);
+uint8_t calc_bmp_padding_bytes(size_t width) {
+	return static_cast<uint8_t>(calc_pad(width*3, 4));
 }
 
 // Converts a double value to a uint8_t, clamping the value to the limits of
@@ -120,7 +120,7 @@ uint8_t clamped_convert(double x) {
 	if (x < 0.0) return 0;
 	if (x > 255.0) return 255;
 
-	return (uint8_t)x;
+	return static_cast<uint8_t>(x);
 }
 
 // Helper class for performing subsampling and color conversion on
@@ -203,7 +203,7 @@ private:
 	// If we have horizontal subsample padding, copy the last pixel
 	// to the rest of the columns for better averages
 	void x_copy(unsigned int y) {
-		for (int i = width; i < width_padded; i++) {
+		for (unsigned int i = width; i < width_padded; i++) {
 			rows[coord(i, y)] = rows[coord(width - 1, y)];
 		}
 	}
@@ -211,7 +211,7 @@ private:
 	// Copies row y=`first_filled` to all rows of lower y coordinate. If
 	// first_filled == 0, this does nothing.
 	void y_copy_lower(unsigned int first_filled) {
-		for (int y = 0; y < first_filled; y++) {
+		for (unsigned int y = 0; y < first_filled; y++) {
 			copy_row(first_filled, y);
 		}
 	}
@@ -219,7 +219,7 @@ private:
 	// Copies row `last_filled` to all rows of higher y coordinate. If
 	// last_filled == subsamp - 1 this does nothing.
 	void y_copy_upper(unsigned int last_filled) {
-		for (int y = last_filled + 1; y < subsamp; y++) {
+		for (unsigned int y = last_filled + 1; y < subsamp; y++) {
 			copy_row(last_filled, y);
 		}
 	}
@@ -227,7 +227,7 @@ private:
 	// Consumes padding bytes, as specified by BMP standard. If
 	// `file_padding_bytes` == 0, this does nothing.
 	void consume_padding_bytes() {
-		for (int i = 0; i < file_padding_bytes; i++) {
+		for (unsigned int i = 0; i < file_padding_bytes; i++) {
 			file->get();
 		}
 	}
@@ -292,12 +292,12 @@ public:
 		this->subsamp = subsamp;
 		this->reverse_order = reverse_order;
 		this->file_padding_bytes = calc_bmp_padding_bytes(width);
-		this->width_padded = width + calc_pad(width, subsamp);
+		this->width_padded = width + static_cast<uint32_t>(calc_pad(width, subsamp));
 
 		// Init rows. This vector will never be resized, only written
 		// over.
 		rows.reserve(subsamp*width_padded);
-		for (int i = 0; i < subsamp*width_padded; i++) {
+		for (unsigned int i = 0; i < subsamp*width_padded; i++) {
 			rows.push_back(YCbCrPixel(0, 0, 0));
 		}
 	}
@@ -313,17 +313,17 @@ public:
 	bool advance() {
 		if (no_more_rows()) return false;
 
-		int y_start = 0;
+		unsigned int y_start = 0;
 		if (first_read && reverse_order) {
 			msg::warn(
 				"READ_BMP: BMP window using reverse order, "
 				"skipping height pad on first advance."
 			);
-			y_start = calc_pad(height, subsamp);
+			y_start = static_cast<unsigned int>(calc_pad(height, subsamp));
 		}
 
-		int last_filled;
-		for (int y = y_start; y < subsamp; y++) {
+		unsigned int last_filled;
+		for (unsigned int y = y_start; y < subsamp; y++) {
 			consume_row(y);
 			x_copy(y);
 			last_filled = y;
@@ -368,8 +368,8 @@ public:
 		uint16_t result = 0;
 		unsigned int x_start = samp_x * subsamp;
 		unsigned int x_end = x_start + subsamp;
-		for (int y = 0; y < subsamp; y++) {
-			for (int x = x_start; x < x_end; x++) {
+		for (unsigned int y = 0; y < subsamp; y++) {
+			for (unsigned int x = x_start; x < x_end; x++) {
 				result += rows[coord(x, y)][comp];
 			}
 		}
@@ -496,15 +496,15 @@ public:
 			unsigned int ymap = window.get_zero_y_map();
 			unsigned int ymap_color = ymap / subsamp;
 
-			for (int y = 0; y < subsamp; y++) {
-				for (int luma_x = 0; luma_x < image_header._width; luma_x++) {
+			for (unsigned int y = 0; y < subsamp; y++) {
+				for (unsigned int luma_x = 0; luma_x < image_header._width; luma_x++) {
 					uint8_t s = window.sample(luma_x, y, 0);
 					buf[0][luma_x, y + ymap] = s;
 				}
 			}
 
-			for (int comp = 1; comp < 3; comp++) {
-				for (int color_x = 0; color_x < image_header._width / subsamp; color_x++) {
+			for (unsigned int comp = 1; comp < 3; comp++) {
+				for (unsigned int color_x = 0; color_x < image_header._width / subsamp; color_x++) {
 					uint8_t s = window.sample(color_x, 0, comp);
 					buf[comp][color_x, ymap_color] = s;
 				}
@@ -526,7 +526,7 @@ public:
 		const auto& img_size = buf[0].valid_size();
 		uint8_t padding_bytes = calc_bmp_padding_bytes(img_size.width());
 
-		uint32_t file_size = (
+		uint32_t file_size = static_cast<uint32_t>(
 			sizeof(BmpFileHeader)
 			+ sizeof(BmpImageHeader)
 			+ (img_size.width() * 3 + padding_bytes) * img_size.height()
@@ -541,8 +541,8 @@ public:
 		// height is given as a negative number so the rows are
 		// ordered top-to-bottom.
 		write_image_header(
-			img_size.width(),
-			-(int32_t)img_size.height()
+			static_cast<uint32_t>(img_size.width()),
+			-static_cast<int32_t>(img_size.height())
 		);
 
 		auto cb_subsamp = buf.subsamp(2);
@@ -556,12 +556,12 @@ public:
 				// what the JFIF standard says... component[1]
 				// should be Cb, not Cr.
 				double cb = buf[2][
-					x / cb_subsamp.x,
-					y / cb_subsamp.y
+					x / static_cast<uint32_t>(cb_subsamp.x),
+					y / static_cast<uint32_t>(cb_subsamp.y)
 				];
 				double cr = buf[1][
-					x / cr_subsamp.x,
-					y / cr_subsamp.y
+					x / static_cast<uint32_t>(cr_subsamp.x),
+					y / static_cast<uint32_t>(cr_subsamp.y)
 				];
 
 				double r = luma + 1.402 * (cr - 128.0);

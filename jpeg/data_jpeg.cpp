@@ -376,7 +376,7 @@ struct ScanComponentParams {
 struct Scan {
 	// The index of this scan in the scan array. Set automatically
 	// by Frame::new_scan().
-	unsigned int index;
+	size_t index;
 
 	// The number of components in this scan. If >1, this scan contains
 	// interleaved data.
@@ -469,7 +469,7 @@ struct FrameComponentParams {
 	uint8_t identifier = 0;
 
 	// The component index for these params.
-	unsigned int index;
+	size_t index;
 
 	// Horizontal size of a block chunk to be contained in one MCU.
 	// Also determines size of this component relative to others.
@@ -515,7 +515,7 @@ struct Frame {
 
 	// The index of this frame in the frame array. Set automatically
 	// by CompressedJpegData::new_frame().
-	unsigned int index;
+	size_t index;
 
 	// Number of bits on one image sample. Should always be 8 for baseline
 	// operation.

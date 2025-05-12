@@ -1,3 +1,8 @@
+module;
+
+// required for max int size macros
+#include <cstdint>
+
 export module jpeg:file.jpeg;
 
 // file_jpeg.cpp:
@@ -44,11 +49,21 @@ private:
 
 	// Writes the length of the segment to file.
 	void put_length() {
-		auto [h, l] = uint16_be(data.size() + 2);
+		auto [h, l] = uint16_be(size() + 2);
 		file->put(h);
 		file->put(l);
 	}
 public:
+	uint16_t size() const {
+		size_t s = data.size();
+
+		if (s > UINT16_MAX - 2) {
+			throw JpegFileError("Written segment data exceeds valid size");
+		}
+
+		return static_cast<uint16_t>(s);
+	}
+
 	JpegSegmentWriter(std::fstream& file) {
 		this->file = &file;
 	}
@@ -205,12 +220,12 @@ private:
 
 	// Writes a JPEG file marker, 0xFFXX.
 	void write_marker(const Marker& m) {
-		file.put(0xFF).put(m);
+		file.put(mark_start).put(m);
 	}
 
 	// Shortcut, allows writing a special marker constant directly
 	void write_marker(MarkerSpecial m) {
-		file.put(0xFF).put((uint8_t)m);
+		file.put(mark_start).put((uint8_t)m);
 	}
 
 	// Reads next marker, placing the cursor after the two byte marker value.
@@ -612,7 +627,7 @@ private:
 
 		for (int i = 0; i < 64; i++) {
 			if (precision == 0) {
-				seg.write_byte(table.data.zz(i));
+				seg.write_byte(static_cast<uint8_t>(table.data.zz(i)));
 			} else {
 				seg.write_uint16(table.data.zz(i));
 			}

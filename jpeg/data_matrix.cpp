@@ -27,17 +27,17 @@ constexpr std::array<uint8_t, block_area> zz_order_from_row_order {
 	35, 36, 48, 49, 57, 58, 62, 63
 };
 
-constexpr auto invert_array(const std::array<uint8_t, block_area>& a) {
+constexpr auto invert_zzmap(const std::array<uint8_t, block_area>& a) {
 	std::array<uint8_t, block_area> out;
 
-	for (size_t i = 0; i < out.size(); i++) {
+	for (uint8_t i = 0; i < out.size(); i++) {
 		out[a[i]] = i;
 	}
 
 	return out;
 }
 
-constexpr auto row_order_from_zz_order = invert_array(zz_order_from_row_order);
+constexpr auto row_order_from_zz_order = invert_zzmap(zz_order_from_row_order);
 
 template<arithmetic T, size_t W=block_size, size_t H=block_size>
 class Matrix {

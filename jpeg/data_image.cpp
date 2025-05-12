@@ -1,3 +1,8 @@
+module;
+
+// for max int size macros
+#include <cstdint>
+
 export module jpeg:data.image;
 
 // data_image.cpp:
@@ -374,10 +379,16 @@ public:
 	ImageBuffer() = delete;
 	ImageBuffer(SampleFormat fmt) : _sampfmt{fmt} {}
 
-	size_t num_components() const { return comps.size(); }
+	uint8_t num_components() const {
+		return static_cast<uint8_t>(comps.size());
+	}
+
 	auto sample_format() { return _sampfmt; }
 
 	ComponentBuffer& new_component(const Dimensions& dims) {
+		if (comps.size() >= UINT8_MAX) {
+			throw std::runtime_error("Images cannot have more than 255 components");
+		}
 		comps.emplace(comps.end(), dims, _sampfmt);
 		return comps.back();
 	}

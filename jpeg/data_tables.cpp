@@ -1,3 +1,8 @@
+module;
+
+// needed for max size macros
+#include <cstdint>
+
 export module jpeg:data.tables;
 
 // data_tables.cpp:
@@ -63,7 +68,7 @@ private:
 		}
 	}
 public:
-	const int hist_last() const {
+	int hist_last() const {
 		return static_cast<int>(table_dest_history.size()) - 1;
 	}
 
@@ -135,9 +140,13 @@ public:
 			msg::debug("Replacing table at dest {}", dest_id);
 		}
 
+		if (tables.size() >= UINT8_MAX) {
+			throw std::runtime_error("TableMap::tables too large");
+		}
+
 		// Construct new table in place and add a reference to it.
 		tables.emplace(tables.end(), std::forward<Args>(args)...);
-		table_dest[dest_id] = tables.size() - 1;
+		table_dest[dest_id] = static_cast<uint8_t>(tables.size()) - 1;
 	}
 
 	explicit operator std::string() const {
