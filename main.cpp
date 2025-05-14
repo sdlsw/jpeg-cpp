@@ -137,10 +137,11 @@ public:
 
 		for (unsigned int q = 0; q <= 100; q += 10) {
 			auto fname = std::format("qualitytest{:03d}.jpg", q);
+			auto raws_copy = raws;
 			jpeg::JpegEncoder encoder { q } ;
 			jpeg::JpegFile jpeg { fname, std::ios_base::out };
 
-			jpeg.write(encoder.encode(raws));
+			jpeg.write(encoder.encode(raws_copy));
 		}
 
 		return 0;
