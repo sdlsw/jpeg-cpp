@@ -14,6 +14,7 @@ add_library(compiler-flags INTERFACE)
 target_compile_features(compiler-flags INTERFACE cxx_std_23)
 set(msvc "$<COMPILE_LANG_AND_ID:CXX,MSVC>")
 target_compile_options(compiler-flags INTERFACE "$<${msvc}:-W3>")
+target_compile_definitions(compiler-flags INTERFACE "$<$<CONFIG:Debug>:DEBUG>")
 
 add_subdirectory(arg)
 add_subdirectory(msg)

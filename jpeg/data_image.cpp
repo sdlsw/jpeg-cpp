@@ -77,6 +77,11 @@ private:
 	// on block_advance() and mcu_advance().
 	Point _samp_offset {0, 0};
 
+	// True if this BlockView is viewing a block that is in _buffer.
+	// False if we're outside those bounds. Recalculated on block_advance()
+	// and mcu_advance().
+	bool _in_bounds = true;
+
 	// The buffer being viewed.
 	BufferType* _buffer;
 
@@ -86,6 +91,7 @@ private:
 
 	void recalc_offset() {
 		_samp_offset = (_mcu_coords * _mcu_size_blocks + _block_coords) * block_dims;
+		_in_bounds = _buffer->backing_size_pixels().contains(_samp_offset);
 	}
 
 	// Advances a point through a space of given dimensions, in row-major
@@ -128,20 +134,19 @@ public:
 	BlockView(BufferType& buf) : BlockView(buf, buf.backing_size_blocks()) {}
 
 	int16_t& operator[](const Point& p) {
+#ifdef DEBUG
 		block_dims.bounds_check(p);
-		Point samp_coords = _samp_offset + p;
+#endif
 
 		// Sample coordinates may fall outside of component buffer,
 		// if it is not MCU-aligned. In this case, we return a
 		// reference to a dummy value.
-		// FIXME Can probably optimize this by checking for out of
-		// bounds _samp_offset on block_advance() and setting a flag.
-		if (!_buffer->backing_size_pixels().contains(samp_coords)) {
+		if (!_in_bounds) {
 			empty_samp = 0;
 			return empty_samp;
 		}
 
-		return (*_buffer)[samp_coords];
+		return (*_buffer)[_samp_offset + p];
 	}
 
 	int16_t& operator[](size_t x, size_t y) {
@@ -151,7 +156,9 @@ public:
 
 	// Accesses this block in zig-zag order.
 	int16_t& zz(this auto& self, size_t z) {
+#ifdef DEBUG
 		if (z >= block_dims.area()) throw std::out_of_range("zz: out of range");
+#endif
 		return self[coords_from_zz[z]];
 	}
 
@@ -256,7 +263,9 @@ private:
 	std::vector<int16_t> _data;
 
 	size_t data_idx_from_pt(const Point& p) {
+#ifdef DEBUG
 		_backing_size_pixels.bounds_check(p);
+#endif
 		return p.y * _backing_size_pixels.width() + p.x;
 	}
 

@@ -125,7 +125,9 @@ public:
 	constexpr auto end() const { return data.cend(); }
 
 	auto& operator[](this auto& self, size_t x, size_t y) {
+#ifdef DEBUG
 		self.bounds_check(x, y);
+#endif
 		return self.data[y*W + x];
 	}
 
@@ -136,9 +138,11 @@ public:
 			throw std::runtime_error("zz() only for 8x8 matrices");
 		}
 
+#ifdef DEBUG
 		if (zz >= block_area) {
 			throw std::invalid_argument("zz(): index cannot exceed 64");
 		}
+#endif
 
 		return self.data[row_order_from_zz_order[zz]];
 	}
