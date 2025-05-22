@@ -372,7 +372,7 @@ struct ScanComponentParams {
 // case, the data will be interleaved, with the scan containing the same number
 // of blocks as the sum of the number of blocks contained in each component.
 // 
-// The exact ordering of blocks in the scan is not trivial. See BlockView.
+// The exact ordering of blocks in an interleaved scan is not trivial. See BlockView.
 struct Scan {
 	// The index of this scan in the scan array. Set automatically
 	// by Frame::new_scan().
@@ -387,10 +387,18 @@ struct Scan {
 	// occur in the coded scan data.
 	std::vector<ScanComponentParams> component_params;
 
-	// Values for operation modes other than baseline. Unused.
+	// Start and end of band (ZZ coordinates into block) for spectral
+	// selection in progressive mode.
 	uint8_t start_spectral_sel = 0;
 	uint8_t end_spectral_sel = 63;
+
+	// Name based on standard, it's a little contradictory - this number
+	// represents the *lowest* bit position that has been defined by
+	// previous successive approximation scans. It is 0 if this scan is
+	// the first in band, or if the scan is sequential mode.
 	uint8_t succ_approx_high = 0;
+
+	// Defines the point transform to be used for this scan.
 	uint8_t succ_approx_low = 0;
 
 	// Number of MCUs contained in one restart interval.
@@ -417,17 +425,28 @@ struct Scan {
 		return component_params[n];
 	}
 
-	explicit operator std::string() const {
-		std::stringstream out;
+	// Checks if this scan is the first iteration of successive
+	// approximation in a given spectral band. Only meaningful in
+	// progressive mode.
+	bool is_first_in_band() const {
+		return succ_approx_high == 0;
+	}
 
-		out << std::format(
-			"Ss={} | Se={} | Ah={} | Al={} | RSTi={}\n",
+	std::string paramstr() const {
+		return std::format(
+			"Ss={} | Se={} | Ah={} | Al={} | RSTi={}",
 			start_spectral_sel,
 			end_spectral_sel,
 			succ_approx_high,
 			succ_approx_low,
 			restart_interval
 		);
+	}
+
+	explicit operator std::string() const {
+		std::stringstream out;
+
+		out << paramstr() << '\n';
 
 		for (const auto& comp : component_params) {
 			out << std::format(
@@ -459,7 +478,19 @@ struct AcCoeff {
 	// Checks if this value codes EOB (end of block).
 	// If this value is encountered while decoding, then the rest of the
 	// block will be filled with zeros.
-	bool is_eob() const { return r == 0 && s == 0; }
+	//
+	// If in progressive mode, then `value` will contain a "block run
+	// length", >=1. A run length of 3 would indicate that the remainder of
+	// the current block and the next two blocks will not specify any new
+	// coefficients.
+	bool is_eob() const { return r < 15 && s == 0; }
+
+	// Indicates a run of 16 zeros.
+	bool is_zrl() const { return r == 15 && s == 0; }
+
+	explicit operator std::string() const {
+		return std::format("r={}, s={}, value={}", r, s, value);
+	}
 };
 
 // Information about one component in a frame.

@@ -54,6 +54,50 @@ std::tuple<const std::string&, const std::string&> io_file_args(
 	}
 }
 
+// --dbg-scans is parsed as a comma-delimited list of integers.
+void evaluate_dbg_scans(const std::string& scans_arg, std::set<unsigned int>& scan_set) {
+	size_t str_start = 0;
+	size_t str_end = 0;
+	do {
+		str_end = scans_arg.find(',', str_start + 1);
+		if (str_end == std::string::npos) str_end = scans_arg.size();
+		auto count = str_end - str_start;
+		std::string s = scans_arg.substr(str_start, count);
+		scan_set.insert(std::abs(std::stoi(s)));
+
+		str_start = str_end + 1;
+	} while (str_start < scans_arg.size());
+}
+
+template<typename ScanView>
+void evaluate_debug_options(const arg::Args& args, jpeg::CodingDebugConfig<ScanView>& cfg) {
+	if (args.has_opt("--dbg-mcux")) {
+		unsigned int mcux = args.getopt_uint("--dbg-mcux");
+		cfg.enable_mcu_x_min = mcux;
+		cfg.enable_mcu_x_max = mcux;
+	}
+
+	if (args.has_opt("--dbg-mcuy")) {
+		unsigned int mcuy = args.getopt_uint("--dbg-mcuy");
+		cfg.enable_mcu_y_min = mcuy;
+		cfg.enable_mcu_y_max = mcuy;
+	}
+
+	if (args.has_opt("--dbg-scans")) {
+		evaluate_dbg_scans(args.options.at("--dbg-scans"), cfg.enable_scans);
+	}
+
+	if (args.has_opt("--dbg-mcuxmax")) cfg.enable_mcu_x_max = args.getopt_uint("--dbg-mcuxmax");
+	if (args.has_opt("--dbg-mcuxmin")) cfg.enable_mcu_x_min = args.getopt_uint("--dbg-mcuxmin");
+	if (args.has_opt("--dbg-mcuymax")) cfg.enable_mcu_y_max = args.getopt_uint("--dbg-mcuymax");
+	if (args.has_opt("--dbg-mcuymin")) cfg.enable_mcu_y_min = args.getopt_uint("--dbg-mcuymin");
+
+	if (args.has_opt("--dbg-print-ac-coeff")) cfg.print_ac_coeff = true;
+	if (args.has_opt("--dbg-print-correction")) cfg.print_correction = true;
+	if (args.has_opt("--dbg-save-dct-coeff")) cfg.save_dct_coeff = true;
+	if (args.has_opt("--dbg-print-blockn")) cfg.print_blockn = true;
+}
+
 class Mode {
 public:
 	const std::string name;
@@ -75,6 +119,8 @@ public:
 		jpeg::BmpFile bmp_file { infile, std::ios_base::in };
 		jpeg::JpegEncoder encoder { quality };
 
+		evaluate_debug_options(args, encoder.debug_config);
+
 		auto raws = bmp_file.read(subsamp);
 		auto encoded = encoder.encode(raws);
 
@@ -95,6 +141,8 @@ public:
 
 		jpeg::JpegFile jpeg_file { infile, std::ios_base::in };
 		jpeg::JpegDecoder decoder;
+
+		evaluate_debug_options(args, decoder.debug_config);
 
 		auto jpeg_data = jpeg_file.read();
 		auto decoded = decoder.decode(jpeg_data);
@@ -256,11 +304,29 @@ auto make_mode_vec() {
 
 int main_inner(int argc, char* argv[]) {
 	arg::ArgParser parser {{
+		// Normal options
 		{"--help", arg::noconsume},
 		{"-h",     arg::noconsume},
 		{"-o",     arg::consume},
 		{"-q",     arg::consume},
-		{"-s",     arg::consume}
+		{"-s",     arg::consume},
+
+		// Debug domain settings
+		{"--dbg-mcux",    arg::consume},
+		{"--dbg-mcuy",    arg::consume},
+		{"--dbg-mcuxmin", arg::consume},
+		{"--dbg-mcuxmax", arg::consume},
+		{"--dbg-mcuymin", arg::consume},
+		{"--dbg-mcuymax", arg::consume},
+		{"--dbg-scans",   arg::consume},
+
+		// Debug message toggles
+		{"--dbg-print-ac-coeff",   arg::noconsume},
+		{"--dbg-print-correction", arg::noconsume},
+		{"--dbg-print-blockn",     arg::noconsume},
+
+		// Debug file toggles
+		{"--dbg-save-dct-coeff",   arg::noconsume}
 	}};
 
 	auto args = parser.parse(argc, argv);
@@ -282,7 +348,7 @@ int main_inner(int argc, char* argv[]) {
 	for (const auto& mode : modes) {
 		if (mode->name == modestr) return mode->run(args);
 	}
-	
+
 	msg::error("unrecognized mode {}", modestr);
 	usage();
 

@@ -86,7 +86,10 @@ private:
 		return magnitude;
 	}
 public:
-	ScanEncodeView(Scan& scan) : DcPredictor(scan.num_components), _scan(&scan) {
+	ScanEncodeView(
+		Scan& scan,
+		bool progressive_ac = false // TODO unused for now
+	) : DcPredictor(scan.num_components), _scan(&scan) {
 		next_rst();
 	}
 
@@ -150,6 +153,21 @@ class EncodePolicy {
 public:
 	static inline const std::string phase_name = "ENCODE";
 
+	// Stub out progressive mode, not yet supported for encoding.
+	static unsigned int code_block_progressive_dc(
+		const CodingDebugConfig<ScanEncodeView>& debug_config,
+		BlockView<ComponentBuffer>& block_view,
+		ScanEncodeView& scan_view,
+		const HuffmanTable& dc_tbl
+	) { return 0; }
+	static unsigned int code_block_progressive_ac(
+		const CodingDebugConfig<ScanEncodeView>& debug_config,
+		BlockView<ComponentBuffer>& block_view,
+		ScanEncodeView& scan_view,
+		const HuffmanTable& ac_tbl,
+		bool all_run = false
+	) { return 0; }
+
 	// Codes an arbitrarily long run of zeros to the scan, followed by a
 	// non-zero coefficient value.
 	static void code_run(
@@ -167,11 +185,12 @@ public:
 		scan_view.encode_ac_coeff(ac_tbl, run_length, coeff);
 	}
 
-	static void code_block(
-		const HuffmanTable& dc_tbl,
-		const HuffmanTable& ac_tbl,
+	static unsigned int code_block_sequential(
+		const CodingDebugConfig<ScanEncodeView>& debug_config,
+		BlockView<ComponentBuffer>& block_view,
 		ScanEncodeView& scan_view,
-		BlockView<ComponentBuffer>& block_view
+		const HuffmanTable& dc_tbl,
+		const HuffmanTable& ac_tbl
 	) {
 		scan_view.encode_dc_coeff(dc_tbl, block_view.zz(0));
 
@@ -195,6 +214,8 @@ public:
 		if (run_length > 0) {
 			scan_view.encode_ac_eob(ac_tbl);
 		}
+
+		return 0;
 	}
 
 	static void flush(ScanEncodeView& scan_view) {
@@ -202,10 +223,12 @@ public:
 	}
 };
 
+using ScanEncoder = ScanCoder<EncodePolicy, ScanEncodeView, Scan>;
+
 // Class encapsulating the JPEG encoding algorithm. This encoder supports only
 // baseline huffman coding, which is by far the most common operation mode in
 // use on the internet today.
-class JpegEncoder : CodingBase<EncodePolicy, ScanEncodeView> {
+class JpegEncoder {
 private:
 	// The quality setting from 0-100 with which this encoder will compress
 	// images. Lower values result in smaller file size, but worse visual
@@ -246,6 +269,8 @@ private:
 	}
 
 public:
+	CodingDebugConfig<ScanEncodeView> debug_config;
+
 	// Compress the data contained in a raw YCrCb image. This will emit
 	// one frame, consisting of one scan with all components interleaved.
 	//
@@ -308,7 +333,8 @@ public:
 		buf.fdct(j.get_qtables(frame));
 		msg::debug("ENCODE: encode_frame: done.");
 
-		code_scan(j, frame, scan, buf);
+		ScanEncoder encoder { debug_config, j, frame, scan, buf };
+		encoder.code_scan();
 
 		j.set_valid();
 		return std::move(j);

@@ -166,6 +166,15 @@ public:
 	// dimension information.
 	const BufferType& buffer() const { return *_buffer; }
 
+	const Point& mcu_coords() const { return _mcu_coords; }
+
+	// Returns the index of the block being viewed, if the blocks were
+	// stored in row-major order.
+	size_t blockn() const {
+		auto global_block_coords = _mcu_size_blocks * _mcu_coords + _block_coords;
+		return global_block_coords.x + global_block_coords.y * _buffer->backing_size_blocks().x;
+	}
+
 	// Advances this view to the next MCU, resetting the block coordinates
 	// to (0, 0). If we are able to advance, this will return true. Failure
 	// to advance will return false, indicating the view is at the end of
@@ -227,6 +236,18 @@ public:
 		transform.ptwise_div_inplace(table.data);
 
 		copy_from_matrix(transform);
+	}
+
+	// Dumps the current block to a file in human-readable format.
+	// For debugging.
+	void dump_to_file(std::ofstream& file) {
+		for (size_t y = 0; y < block_size; y++) {
+			for (size_t x = 0; x < block_size; x++) {
+				file << std::to_string((*this)[x, y]) << " ";
+			}
+		}
+
+		file << std::endl;
 	}
 
 	explicit operator std::string() const {
@@ -346,6 +367,16 @@ public:
 		);
 	}
 
+	// Dumps this component's data to a file, in human-readable form.
+	// For debugging.
+	void dump_to_file(std::ofstream& file) {
+		BlockView<ComponentBuffer> view { *this };
+
+		do {
+			view.dump_to_file(file);
+		} while (view.block_advance());
+	}
+
 	explicit operator std::string() const {
 		return std::format(
 			"valid_size={}, backing_size_blocks={}, backing_size_pixels={}",
@@ -428,6 +459,20 @@ public:
 	// Runs the inverse DCT procedure on this image in-place.
 	void idct(const std::vector<const QuantizationTable*>& tables) {
 		do_dct_op(tables, SampleFormat::Sample8, &ComponentBuffer::idct);
+	}
+
+	// Dumps this image buffer to a file in human-readable format.
+	// For debugging.
+	void dump_to_file(std::ofstream& file) {
+		for (unsigned int i = 0; i < comps.size(); ++i) {
+			file << std::format("COMP{}", i) << std::endl;
+			comps[i].dump_to_file(file);
+		}
+	}
+
+	void dump_to_file(const std::string& fname) {
+		std::ofstream file { fname };
+		dump_to_file(file);
 	}
 
 	auto begin() {

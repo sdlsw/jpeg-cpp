@@ -4,6 +4,7 @@
 
 export module jpeg;
 export import :data.jpeg;
+export import :codingbase;
 export import :decode;
 export import :encode;
 export import :file.bmp;
