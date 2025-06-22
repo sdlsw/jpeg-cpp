@@ -60,4 +60,3 @@ See [encode-examples](encode-examples) for some sample JPEGs produced by the enc
 ## Known Bugs/Issues
 
 - JPEG encoding appears to slightly alter the colors of the image, to the point that there is a noticeable visual difference. When compared to other encoders (such as the one used in GIMP), this difference does not occur. It's still not known why this is the case.
-- Progressive JPEG is unsupported. This will be fixed in a pending update.
