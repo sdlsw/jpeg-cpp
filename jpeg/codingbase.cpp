@@ -265,12 +265,8 @@ private:
 		if (skip_block) {
 			--blocks_to_skip;
 		} else if (ret_skipcount > 0) {
-			//msg::debug("nonzero ret_skipcount ({})", ret_skipcount);
 			blocks_to_skip = ret_skipcount;
 		}
-
-		// TMP
-		//throw std::runtime_error("stop");
 	}
 
 	// Codes a single component in an interleaved scan.
