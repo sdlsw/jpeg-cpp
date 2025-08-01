@@ -4,15 +4,17 @@ An implementation of JPEG image compression written in C++23. This is a learning
 
 - Learn modern C++ using the most recent standard with reasonable support. As of writing this is C++23.
 - Demonstrate ability to use technology I'm less familiar with to implement something nontrivial.
-- Demonstrate ability to implement something described in a standards document.
+- Demonstrate ability to implement technology described in a standards document.
 
 I picked JPEG compression for the subject, since implementing it takes some work, it's standard, and most people are at least familiar with its existence. Plus, I'm fond of digital image algorithms in general.
 
 In addition, I gave myself some rules to follow. First, no third party libraries. The goal was to familiarize myself with new language features (including stdlib), and having to write everything from scratch helped with that. Second, I did not refer to other JPEG implementations until I'd gotten mine working. I wanted to solve as many problems myself as possible.
 
+I experimented with using C++ modules in this project, which may not be supported by some compilers.
+
 ## Building
 
-`jpeg-cpp` uses [CMake](https://cmake.org/) (version 3.30 or higher required). Currently it has only been tested with MSVC. To build:
+`jpeg-cpp` uses [CMake](https://cmake.org/) (version 3.30 or higher required). Currently it has only been tested with MSVC (MSBuild Ver `17.13.9`, cl.exe Ver `19.43.34808`). To build:
 
 ```sh
 git clone https://github.com/sdlsw/jpeg-cpp.git
